@@ -5,9 +5,10 @@ for checking the pinout estimate in docs/pinout.md.
 
   python tools/stock_probe.py [--ms 3000]
 
-Model: RA3 held high (the firmware waits for it at boot), the 1 ms tick timer
-(enable 0x112.0, flag 0x113.0) ticks every 4000 instruction cycles; radar soft
-UART timers are not driven.
+Model: PA3 (button) held high, since the firmware waits for its release at boot;
+8 MIPS (16 MHz, 2T); TIM4 (TIM4IER 0x112.0 / TIM4SR 0x113.0) interrupts every
+0.2 ms (16 MHz / 16 / 201) as configured by the stock init. The radar
+soft-UART timers (TIM1, TIM2) are not driven.
 """
 import argparse, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15,7 +16,7 @@ import fmd
 from emu import Cpu, frame, parse, Reset
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NAMES = {0x00C: 'PORTA', 0x00D: 'PORTB', 0x00E: 'PORTC', 0x08C: 'TRISA', 0x08D: 'TRISB', 0x08E: 'TRISC'}
+NAMES = {0x00C: 'PA', 0x00D: 'PB', 0x00E: 'PC', 0x08C: 'TRISA', 0x08D: 'TRISB', 0x08E: 'TRISC'}
 
 
 def main():
@@ -25,7 +26,7 @@ def main():
     words = [fmd.fmd_to_pic(w) for w in fmd.load_words(os.path.join(ROOT, 'reference', 'ps10-mcu-1.0.5.bin'))]
     cpu = Cpu(words, eeprom=[0xFF] * 128)
     cpu.inputs[0x00C] = (0x08, 0x08)
-    cpu.add_timer(0x112, 0, 0x113, 0, 4000)
+    cpu.add_timer(0x112, 0, 0x113, 0, 1600)
     cpu.trace_sfr = set(NAMES)
     ports = {k: 0 for k in NAMES}
 
@@ -35,7 +36,7 @@ def main():
         if data:
             cpu.rx.extend(data)
         try:
-            cpu.run(a.ms * 4000)
+            cpu.run(a.ms * 8000)
         except Reset:
             print('   RESET')
         changes = []

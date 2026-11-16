@@ -1,12 +1,15 @@
-"""Minimal PIC16F1 (enhanced mid-range) core emulator, with an FT61E0A5 peripheral
-model inferred from the stock PS10 MCU firmware (no datasheet available).
+"""Minimal PIC16F1 (enhanced mid-range) core emulator with the few FT61E0A5
+peripherals the PS10 firmware uses (register addresses per the FT61E0Ax
+datasheet V1.02, docs/datasheets/).
 
 Images are given in PIC encoding (convert FMD images with fmd2pic first).
 Peripheral model (hypotheses, see docs/ft61e0a5-notes.md):
-  UART (Tuya link)  bank 9: 0x48C data, 0x492 status (bit0 RX ready, bit5 TX empty),
-                    0x48E bit0 RX interrupt enable
-  NVM (PIC16F1-like) bank 3: EEADRL 0x191, EEADRH 0x192, EEDATL 0x193, EEDATH 0x194,
-                    EECON1 0x195 (RD 0, WR 1, WREN 2, CFGS 6, EEPGD 7), EECON2 0x196
+  USART1 (Tuya link): UR1DATAL 0x48C, UR1IER 0x48E (bit0 RXNE interrupt enable),
+                    UR1LSR 0x492 (bit0 RXNEF, bit5 TXEF)
+  NVM: EEADRL 0x191, EEADRH 0x192, EEDATL 0x193, EEDATH 0x194,
+       EECON1 0x195 (RD 0, WR 1, WREN 2, CFGS 6, EEPGD 7), EECON2 0x196.
+       Data is valid 2 instruction cycles after RD for PROM/UCFG and 4 for DATA
+       EEPROM (datasheet 10.3.3 / 10.3.4); reading it earlier raises an error.
 """
 import collections
 
@@ -34,6 +37,7 @@ class Cpu:
         self.resets = 0
         self.cycles = 0
         self.ee_writes = []
+        self.rd_at = None                       # (cycle, cycles needed) of the last NVM read
         self.trace_sfr = set()
         self.sfr_log = []
         self.in_isr = False
@@ -93,6 +97,9 @@ class Cpu:
             return (1 if self.rx else 0) | 0x20 | (self.mem[a] & ~0x21)
         if a in self.trace_sfr:
             self.sfr_log.append(('r', self.pc, a))
+        if a in (EEDATL, EEDATH) and self.rd_at and self.cycles - self.rd_at[0] <= self.rd_at[1]:
+            raise RuntimeError('EEDAT read %d cycles after RD at %04x (needs %d)'
+                               % (self.cycles - self.rd_at[0] - 1, self.pc - 1, self.rd_at[1]))
         if a in self.inputs:
             return (self.mem[a] & ~self.inputs[a][0]) | self.inputs[a][1]
         return self.mem[a]
@@ -138,6 +145,7 @@ class Cpu:
     def nvm_read(self):
         ad = self.mem[EEADRH] << 8 | self.mem[EEADRL]
         c = self.mem[EECON1]
+        self.rd_at = (self.cycles, 2 if c & 0xC0 else 4)
         if c & 0x80 or c & 0x40:
             if c & 0x40:
                 w = self.cfg.get(ad & 0xFF, 0x3FFF)

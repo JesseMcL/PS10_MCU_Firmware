@@ -26,9 +26,10 @@
 ;
 ; Side effects: none besides the UART. Memory is only ever read (EECON1.WREN
 ; is never set, except by the 0x0A handler). No pin other than the Wi-Fi UART
-; is configured or driven; the UART is set up exactly as the stock 1.0.5
-; firmware does it (see docs/ft61e0a5.md for where each value comes from).
-; Interrupts stay disabled.
+; (USART1: TX PA6, RX PA7) is configured or driven; the UART is set up exactly
+; as the stock 1.0.5 firmware does it. Interrupts stay disabled.
+; Register names and values: FT61E0Ax datasheet V1.02 (docs/datasheets/), and
+; docs/ft61e0a5.md.
 
         processor 16f1829
         radix   dec
@@ -50,13 +51,13 @@ INTCON  equ 0x0B
 C       equ 0
 Z       equ 2
 
-; ---- FT61E0A5 registers, inferred from the stock firmware -------------------
+; ---- FT61E0A5 registers (datasheet names) ----------------------------------
 ; bank 1
-OSCCON  equ 0x19        ; 0x099, stock writes 0x71 first thing
-PCKEN   equ 0x1A        ; 0x09A, peripheral clock enables (stock: bit5 before UART init)
-WDTCON  equ 0x17        ; 0x097, stock writes 0x55
+OSCCON  equ 0x19        ; 0x099: 0x71 = SysClk HIRC 16 MHz, divider 1 (as stock)
+PCKEN   equ 0x1A        ; 0x09A: peripheral clock enables, bit5 UART1EN
+WDTCON  equ 0x17        ; 0x097: 0x55 = WDTPRE /4, WDTPS 32768, SWDTEN: ~4 s on LIRC (as stock)
 TRISA   equ 0x0C        ; 0x08C
-; bank 3: NVM controller (identical to PIC16F1 EEADR/EEDAT/EECON)
+; bank 3: data EEPROM / PROM controller
 EEADRL  equ 0x11
 EEADRH  equ 0x12
 EEDATL  equ 0x13
@@ -68,18 +69,18 @@ WR      equ 1
 WREN    equ 2
 CFGS    equ 6
 EEPGD   equ 7
-X19D    equ 0x1D        ; 0x19D, stock clears it before setting WDTCON
+MISC0   equ 0x1D        ; 0x19D: WCKSEL = 00, WDT clock LIRC (stock clears it)
 ; bank 4
-X21F    equ 0x1F        ; 0x21F, stock sets bit0 after the UART registers
-; bank 9: UART (the Tuya link)
-UDAT   equ 0x0C        ; 0x48C rx/tx data
-UCTL0   equ 0x0E        ; 0x48E = 0x23 (bit0 = rx interrupt enable; unused here)
-UCTL1   equ 0x0F        ; 0x48F = 0x01
-UCTL3   equ 0x11        ; 0x491 = 0x18
-USTAT   equ 0x12        ; 0x492: bit0 rx data ready, bit5 tx idle
-UBRGL   equ 0x14        ; 0x494 = 0x68 (104: 9600 baud if the UART clock is 16 MHz)
-UBRGH   equ 0x15        ; 0x495 = 0x00
-UCTL2   equ 0x1C        ; 0x49C bit0 set
+ODCON0  equ 0x1F        ; 0x21F: bit0 UR1OD, USART1 TX open drain (as stock)
+; bank 9: USART1, the Tuya link (TX PA6, RX PA7: AFP0/AFP1 left at reset)
+UDAT    equ 0x0C        ; 0x48C UR1DATAL
+UCTL0   equ 0x0E        ; 0x48E UR1IER = 0x23 (TCEN, TE, RXNE; unused, GIE stays 0)
+UCTL1   equ 0x0F        ; 0x48F UR1LCR = 0x01: 8 bits, no parity, 1 stop
+UCTL3   equ 0x11        ; 0x491 UR1MCR = 0x18: TXEN, RXEN
+USTAT   equ 0x12        ; 0x492 UR1LSR: bit0 RXNEF, bit5 TXEF
+UBRGL   equ 0x14        ; 0x494 UR1DLL = 104: 16 MHz / (16 * 104) = 9615 baud
+UBRGH   equ 0x15        ; 0x495 UR1DLH = 0
+UCTL2   equ 0x1C        ; 0x49C UR1TC: bit0 TCF, write 1 to clear (as stock)
 RXRDY   equ 0
 TXIDLE  equ 5
 
@@ -123,14 +124,14 @@ main:
         movlw   0x71            ; system clock, as stock
         movwf   OSCCON
         movlb   3
-        clrf    X19D            ; watchdog, as stock
+        clrf    MISC0           ; watchdog, as stock
         movlw   0x55
         movlb   1
         movwf   WDTCON
         clrwdt
         bsf     PCKEN, 5        ; UART clock
-        bsf     TRISA, 7        ; RX input, TX output: what stock does to the
-        bcf     TRISA, 6        ; Wi-Fi UART pins (the bootloader drives them too)
+        bsf     TRISA, 7        ; PA7 = USART1 RX in, PA6 = USART1 TX out: what
+        bcf     TRISA, 6        ; stock does (the bootloader drives them too)
         movlb   9
         movlw   0x23
         movwf   UCTL0
@@ -143,7 +144,7 @@ main:
         clrf    UBRGH
         bsf     UCTL2, 0
         movlb   4
-        bsf     X21F, 0
+        bsf     ODCON0, 0
         clrf    flags
         clrf    state
 
@@ -503,7 +504,9 @@ dump_l:
         btfsc   STATUS, Z
         clrf    EECON1          ; data EEPROM
         bsf     EECON1, RD
+        nop                     ; PROM/UCFG data after 2 cycles,
         nop
+        nop                     ; DATA EEPROM after 4 (datasheet 10.3.4)
         nop
         movf    EEDATL, w
         call    tx_byte

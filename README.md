@@ -13,9 +13,9 @@ space and the data EEPROM.
 | | |
 |---|---|
 | [docs/pinout.md](docs/pinout.md) | Pin functions estimated from the stock firmware: triac, LED, button, switch input, radar UART/OUT, LDR, Wi-Fi UART |
-| [docs/ft61e0a5.md](docs/ft61e0a5.md) | What's known about the chip without a datasheet: encoding, registers, bootloader contract |
+| [docs/ft61e0a5.md](docs/ft61e0a5.md) | The chip: encoding, memory, registers used, bootloader contract, recovery |
+| [docs/references.md](docs/references.md) | Datasheet and other FMD documents and tools |
 | [docs/radar-passthrough.md](docs/radar-passthrough.md) | Getting the LD2410C to ESPHome's `ld2410:` component |
-| [docs/datasheets/](docs/datasheets/FT61E0Ax_64E0Ax_DS_V1.02_en.pdf) | FMD FT61E0Ax/FT64E0Ax datasheet V1.02 (English) |
 
 ## Before you flash: risk
 
@@ -23,17 +23,18 @@ The dump firmware replaces the stock application. If it didn't start, the stock
 bootloader would never get its `0x0A`, and only an ICSP programmer (on PA2/PB6,
 the triac and LED lines) would recover the MCU. What reduces that risk:
 
-- It's built from the same instruction set and register values the stock
-  firmware uses, and its UART setup is copied from stock line by line.
+- Every register it touches is checked against the datasheet, and its UART
+  setup is the stock firmware's, value for value.
 - It's tested in an emulator that also runs the **stock** image correctly
   (`tools/stock_probe.py`): same UART, same `tuya:` replies, same `0x0A`
-  behaviour. The emulator's register model is inferred, not from a datasheet.
+  behaviour. The emulator enforces the datasheet's EEPROM/PROM read timing.
 - It implements the bootloader contract exactly: `0x0A` → EEPROM 0x00/0x01 =
   `FF`, `RESET`.
 
-What can't be tested without hardware: real FT61E0A5 timing, flash/config
-self-read (assumed PIC16F1-identical; at worst the dump returns garbage) and
-anything the bootloader checks that the stock image happens to satisfy.
+What can't be tested without hardware: real timing, and anything the
+bootloader checks that the stock image happens to satisfy. If the bootloader's
+1K sector is read-protected (`FSECPB0`), its words read back as repeats of the
+last value instead of the code; the rest of the dump still works.
 
 ## What the dump firmware does
 

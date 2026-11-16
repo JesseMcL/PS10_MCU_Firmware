@@ -2,9 +2,10 @@
 
 ## Where the radar is
 The LD2410C talks to the MCU, not the BK7231N: a **software UART on PB3 (to the
-radar) / PB4 (from the radar)**, almost certainly **9600 8N1** (see
-[pinout.md](pinout.md#radar-uart-speed)). The MCU's only hardware UART is the
-Tuya link to the BK7231N, also 9600 baud. The radar's OUT pin goes to PB7.
+radar) / PB4 (from the radar)** at **9600 8N1** (see
+[pinout.md](pinout.md#radar-uart-speed)). The FT61E0A has one USART (USART2
+exists only on the FT64E0A), and it's the Tuya link to the BK7231N, also 9600
+baud. The radar's OUT pin goes to PB7.
 
 ## Options
 
@@ -71,7 +72,6 @@ inputs. ESPHome's `ld2410` then runs natively at 9600 (or switch the radar to
 256000 once it's off the MCU). Needs a free UART on the module and a board mod.
 
 ## Next steps
-1. Confirm the radar baud (logic analyser on PB3/PB4, or the mock-LD2410 setup).
-2. Write the open MCU firmware: Tuya basics + `0x0A`, triac/LED/button/switch/LDR
+1. Write the open MCU firmware: Tuya basics + `0x0A`, triac/LED/button/switch/LDR
    as datapoints, soft UART at 9600, DP 202 tunnel with the filter above.
-3. Write `tuya_uart_tunnel` (fits alongside `tuya_mcu_dfu`).
+2. Write `tuya_uart_tunnel` (fits alongside `tuya_mcu_dfu`).

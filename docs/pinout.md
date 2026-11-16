@@ -1,41 +1,46 @@
 # PS10 MCU pinout (estimate)
 
-Board NAS-PS10W6-MOS-V5, MCU U3 = FMD FT61E0A5 (QFN20). Everything below is
-**inferred from the stock 1.0.5 firmware** (static disassembly plus running it
-in `tools/emu.py` with `tools/stock_probe.py`), not measured. Port names are
-the firmware's (`PORTA`/`PORTB`/`PORTC` at 0x00C/0x00D/0x00E, `TRISx` at
-0x08C-0x08E). Physical pin numbers need the datasheet's pin table; the two
-known ones are from the ISP pinout.
+Board NAS-PS10W6-MOS-V5, MCU U3 = FMD FT61E0A5-NRT (QFN20). Functions are
+**inferred from the stock 1.0.5 firmware** (disassembly, plus running it in
+`tools/emu.py` with `tools/stock_probe.py`) and checked against the
+datasheet's pin functions, not measured. Pin numbers are the datasheet's QFN20
+pinout (pin 1 at the dot, counter-clockwise; exposed pad = GND).
 
 **Verify with a meter before driving anything.** The dump firmware doesn't
 configure or drive any of these, only the Wi-Fi UART.
 
+| QFN20 pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| | PA7 | PB7 | GND | PB6 | VDD | PB5 | PB0 | PB1 | PB2 | PB4 |
+| **pin** | **11** | **12** | **13** | **14** | **15** | **16** | **17** | **18** | **19** | **20** |
+| | PB3 | PA0 | PA1 | PA2 | PA3 | PA4 | PC1 | PC0 | PA6 | PA5 |
+
 | Function | Port | Dir | Confidence | Evidence |
 |---|---|---|---|---|
-| Triac drive (MOC3020 → BTB24) | **PA2** (pin 14, ISPCK) | out, high = on | high | Set/cleared when DP 110 (Output) changes; state saved to EEPROM. Also blinks at boot until the button is released. |
+| Triac drive (MOC3020 → BTB24) | **PA2** (pin 14, ISPCLK) | out, high = on | high | Set/cleared when DP 110 (Output) changes; state saved to EEPROM. Also blinks at boot until the button is released. |
 | Status LED | **PB6** (pin 4, ISPDAT) | out, high = on | high | Follows the output while DP 111 (Status LED) is on; DP 111 off turns it off. Blinks with PA2 at boot and in pairing. |
-| Button | **PA3** | in, active low | high | Emulated: a press toggles the output (PA2, DP 110 report); a long hold sends Tuya `0x04` (reset Wi-Fi / pairing) instead. The hold time in emulation is ~25 s, assuming the tick is 1 ms. Boot blinks PA2/PB6 until PA3 reads high. |
-| External switch input | **PC0** | in, active low | medium-high | Separate from the button. Emulated: a low pulse toggles the output. Consistent with the S-terminal input. The firmware treats it as a DC level, so any opto/RC front end filters the mains. |
-| Radar OUT (LD2410C presence) | **PB7** | in, high = target | medium | 32-bit "time since low" counters reset while high; used for hold/output timing. |
-| Radar UART TX (MCU → LD2410C RX) | **PB3** | out, idle high | high | Software UART: timer interrupt shifts out a byte LSB first (start bit `bcf PB3`, stop bit `bsf PB3`). Carries the `FD FC FB FA` config commands. |
-| Radar UART RX (LD2410C TX → MCU) | **PB4** | in | high | Interrupt-on-change (PIR4 bit 4) catches the start bit, then a timer samples 8 bits into the frame buffer parsed for `F4 F3 F2 F1` / `FD FC FB FA`. |
-| Wi-Fi UART TX (MCU → BK7231N) | **PA6** | out | medium-high | Hardware UART (bank 9 registers); the UART init clears TRISA.6 and sets TRISA.7. In emulation this UART answers ESPHome's `tuya:` exactly as on the device. |
-| Wi-Fi UART RX (BK7231N → MCU) | **PA7** | in | medium-high | As above. |
-| LDR (light sensor) | ADC channel 2, likely **PA4** | analog in | low (pin) / high (channel) | ADC read with CHS = 2, 5-sample average, compared against DP 108. PA4 is the only pin set as input that the firmware never reads digitally. |
+| Button | **PA3** (pin 15) | in, active low | high | Emulated: a press toggles the output (PA2, DP 110 report); a long hold (somewhere between 2.4 and 6 s, at the 0.2 ms TIM4 tick) sends Tuya `0x04` (reset Wi-Fi / pairing) instead. Boot blinks PA2/PB6 until PA3 reads high. |
+| External switch input | **PC0** (pin 18) | in, active low | medium-high | Separate from the button. Emulated: a low pulse toggles the output. Consistent with the S-terminal input. The firmware treats it as a DC level, so any opto/RC front end filters the mains. PC0 can also be MCLR, but that's off by default (`MCLRE`). |
+| Radar OUT (LD2410C presence) | **PB7** (pin 2) | in, high = target | medium | 32-bit "time since low" counters reset while high; used for hold/output timing. |
+| Radar UART TX (MCU → LD2410C RX) | **PB3** (pin 11) | out, idle high | high | Software UART: TIM1 interrupt shifts out a byte LSB first (start bit `bcf PB3`, stop bit `bsf PB3`). Carries the `FD FC FB FA` config commands. |
+| Radar UART RX (LD2410C TX → MCU) | **PB4** (pin 10) | in | high | External interrupt EINT4 (`EPS1` selects PB4) catches the start bit, then TIM2 samples 8 bits into the frame buffer parsed for `F4 F3 F2 F1` / `FD FC FB FA`. |
+| Wi-Fi UART TX (MCU → BK7231N) | **PA6** (pin 19) | out, open drain | high | USART1 at 9600 8N1; `AFP0` left at reset = PA6, `UR1OD` set. In emulation this UART answers ESPHome's `tuya:` exactly as on the device. |
+| Wi-Fi UART RX (BK7231N → MCU) | **PA7** (pin 1) | in | high | USART1, `AFP1` left at reset = PA7. |
+| LDR (light sensor) | **PA4** (pin 16), AN2 | analog in | high | ADC CHS = 2 = AN2 = PA4 (`ANSELA` bit 2), 5-sample average, compared against DP 108. |
 | Zero crossing | none | | high | No pin is used for timing the triac: PA2 is held high while on. The MOC3020 is the non-zero-crossing type, so none is needed. |
 
-Other port bits are outputs driven low at init: PA0, PA1, PA5, PB0-PB2, PB5,
-PC1 and up (not connected, or something enabled by default; check the board).
+Other pins are outputs driven low at init: PA0, PA1, PA5, PB0-PB2, PB5, PC1
+(pins 12, 13, 20, 7-9, 6, 17). Not connected, or something left off; check the
+board. Stock also sets weak pull-ups on PB3/PB4 and maximum drive strength on
+every pin.
 
 ## Radar UART speed
 
-The radar link is a timer-driven software UART, so it can't run at the LD2410C's
-256000 baud default; the stock firmware never sends the LD2410C "set baud"
-command, so the module must be factory-set to the slower rate. The bit timers
-are loaded with 0x0D10 (TX) and 0x0D20 (RX), about 3340 counts: 9600 baud with
-a 32 MHz timer clock. The only other plausible reading (16 MHz, 4800 baud) isn't
-a rate the LD2410C supports. **Expect 9600 8N1**; if your mock-LD2410 capture
-already ran at a known rate, that settles it.
+**9600 8N1.** The radar link is a timer-driven software UART. TIM1 (TX) and
+TIM2 (RX) are clocked from 2 × HIRC = 32 MHz (`TCKSRC` = 0x33) with auto-reload
+0x0D10 and 0x0D20: 32 MHz / 3345 = 9567 baud and 32 MHz / 3361 = 9521 baud,
+both within 1 % of 9600. The stock firmware never sends the LD2410C "set baud"
+command, so the module must ship set to 9600 (its default is 256000).
 
 ## Stock data EEPROM layout
 
