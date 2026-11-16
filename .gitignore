@@ -1,0 +1,5 @@
+build/
+dump/
+__pycache__/
+*.cod
+*.lst

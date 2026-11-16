@@ -1,0 +1,46 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build dump firmware",
+      "type": "process",
+      "command": "python",
+      "args": ["tools/build.py"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": {
+        "owner": "gpasm",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(Error|Warning|Message)\\[\\d+\\]\\s+(.*)$",
+          "file": 1, "line": 2, "severity": 3, "message": 4
+        }
+      }
+    },
+    {
+      "label": "Test dump firmware (emulator)",
+      "type": "process",
+      "command": "python",
+      "args": ["tools/test_dump.py"],
+      "dependsOn": "Build dump firmware",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Probe stock firmware pins (emulator)",
+      "type": "process",
+      "command": "python",
+      "args": ["tools/stock_probe.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Dump log to binaries",
+      "type": "process",
+      "command": "python",
+      "args": ["tools/dump2bin.py", "${input:logFile}", "-o", "dump"],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    { "id": "logFile", "type": "promptString", "description": "ESPHome log file with ps10dump lines" }
+  ]
+}
