@@ -15,6 +15,7 @@ space and the data EEPROM.
 | [docs/pinout.md](docs/pinout.md) | Pin functions estimated from the stock firmware: triac, LED, button, switch input, radar UART/OUT, LDR, Wi-Fi UART |
 | [docs/ft61e0a5.md](docs/ft61e0a5.md) | What's known about the chip without a datasheet: encoding, registers, bootloader contract |
 | [docs/radar-passthrough.md](docs/radar-passthrough.md) | Getting the LD2410C to ESPHome's `ld2410:` component |
+| [docs/datasheets/](docs/datasheets/FT61E0Ax_64E0Ax_DS_V1.02_en.pdf) | FMD FT61E0Ax/FT64E0Ax datasheet V1.02 (English) |
 
 ## Before you flash: risk
 
