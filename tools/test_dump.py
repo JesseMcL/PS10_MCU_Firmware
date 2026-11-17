@@ -69,7 +69,7 @@ for a in range(0, 0x2800, 32):
     n, d = req('F', a, 32)
     assert n == 32
     got += [d[i] | d[i + 1] << 8 for i in range(0, 64, 2)]
-check(got == flash, 'flash dump 0x0000-0x27FF matches (bootloader area included)')
+check(got == [fmd.pic_to_fmd(w) for w in flash], 'flash dump 0x0000-0x27FF matches, in FMD encoding (bootloader area included)')
 n, d = req('C', 0, 32)
 check(n == 32 and [d[i] | d[i + 1] << 8 for i in range(0, 64, 2)] == [cfg[a] for a in range(32)], 'config space dump')
 e = []
@@ -77,7 +77,8 @@ for a in (0, 64):
     n, d = req('E', a, 64)
     e += list(d)
 check(e == ee, 'EEPROM dump')
-check(req('F', 0x1234, 1) == (1, bytes([flash[0x1234] & 0xFF, flash[0x1234] >> 8])), 'single word')
+w1234 = fmd.pic_to_fmd(flash[0x1234])
+check(req('F', 0x1234, 1) == (1, bytes([w1234 & 0xFF, w1234 >> 8])), 'single word')
 check(req('F', 0, 0) == (0, b''), 'count 0 rejected')
 check(req('F', 0, 33) == (0, b''), '33 words rejected')
 check(req('E', 0, 65) == (0, b''), '65 EEPROM bytes rejected')

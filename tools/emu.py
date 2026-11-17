@@ -150,7 +150,9 @@ class Cpu:
             if c & 0x40:
                 w = self.cfg.get(ad & 0xFF, 0x3FFF)
             else:
+                # the stored word, i.e. FMD encoding (confirmed by a dump from hardware)
                 w = self.flash[ad & 0x7FFF] if (ad & 0x7FFF) < len(self.flash) else 0x3FFF
+                w = ((((w >> 12) + 1) & 3) << 12) | (w & 0xFFF) if w != 0x3FFF else w
             self.mem[EEDATL], self.mem[EEDATH] = w & 0xFF, (w >> 8) & 0x3F
         else:
             self.mem[EEDATL] = self.ee[self.mem[EEADRL] & 0x7F]

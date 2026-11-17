@@ -13,6 +13,7 @@ space and the data EEPROM.
 | | |
 |---|---|
 | [docs/pinout.md](docs/pinout.md) | Pin functions estimated from the stock firmware: triac, LED, button, switch input, radar UART/OUT, LDR, Wi-Fi UART |
+| [docs/bootloader.md](docs/bootloader.md) | The stock bootloader, from a dump: boot-time CRC check, updater, EEPROM use |
 | [docs/ft61e0a5.md](docs/ft61e0a5.md) | The chip: encoding, memory, registers used, bootloader contract, recovery |
 | [docs/references.md](docs/references.md) | Datasheet and other FMD documents and tools |
 | [docs/radar-passthrough.md](docs/radar-passthrough.md) | Getting the LD2410C to ESPHome's `ld2410:` component |
