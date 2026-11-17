@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#define TUYA_RX_MAX 72  /* longest payload kept; longer frames are dropped */
+#define TUYA_RX_MAX 136 /* longest payload kept (a 128-byte DP 202 chunk + its header); longer frames are dropped */
 
 #define TUYA_HEARTBEAT   0x00
 #define TUYA_PRODUCT     0x01

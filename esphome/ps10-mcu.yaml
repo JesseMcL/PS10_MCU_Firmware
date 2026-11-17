@@ -40,6 +40,7 @@ logger:
 virtual_uart:
   - id: radar_uart
     baud_rate: 9600       # what the radar runs at on the MCU's software UART
+    tx_chunk_size: 128    # the MCU takes at most 128 radar bytes per DP 202 write
     on_tx:
       - lambda: id(${tuya_id}).force_set_raw_datapoint_value(202, x);
 

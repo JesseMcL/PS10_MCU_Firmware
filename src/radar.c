@@ -19,7 +19,7 @@
 
 #define RXQ 128                 /* power of two */
 #define TXQ 32                  /* being sent */
-#define PQ 128                  /* filtered, waiting for the pacer */
+#define PQ 256                  /* filtered, waiting for the pacer (uint8_t indexes wrap) */
 #define PACE_MS 100
 #define HALF_BIT (RADAR_BAUD_ARR / 2)
 

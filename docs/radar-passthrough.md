@@ -18,9 +18,15 @@ interpreting them:
   ~1 ms at 9600, so 3 ms is the end of an LD2410 frame). Only once `tuya:` has
   queried the datapoints; before that they're discarded.
 - **ESPHome → radar:** a raw DP 202 delivery (`0x06`) is written out on PB3.
-  Chunks can be any size and split frames anywhere: the MCU works byte by byte.
-  It answers every `0x06` with a `0x07` straight away (with whatever radar bytes
-  are waiting, maybe none): `tuya:` waits for one before its next command.
+  Chunks can split frames anywhere (the MCU works byte by byte) and hold up to
+  128 bytes (`tx_chunk_size: 128` on the virtual UART). Each write becomes one
+  Tuya frame, ~11 bytes of overhead, so batching matters: `virtual_uart`
+  delivers everything written in one loop pass together, and `ld2410` writes
+  a whole command (or its seven set-up commands) in one pass.
+- **Flow control:** `tuya:` sends nothing more until it gets a `0x07` back.
+  The MCU answers a DP 202 write (with whatever radar bytes are waiting, maybe
+  none) once its 256-byte queue has room for another full write, or after
+  100 ms, which keeps it inside `tuya:`'s 300 ms timeout.
 - **Filter:** LD2410 **set baud** (`0x00A1`) and **factory reset** (`0x00A2`)
   are never sent. Either would move the radar to a rate a software UART can't
   follow (factory reset means 256000), and only reprogramming its baud over a

@@ -170,6 +170,38 @@ check(decode_uart(cpu.pin_log[log0:], 'B', 3) == enable, 'no ACK: second command
 cpu.ms(130)                                 # DP arrives ~35 ms, enable sent by ~50, +100
 check(decode_uart(cpu.pin_log[log0:], 'B', 3) == both, 'no ACK: second command sent after the 100 ms timeout')
 
+# ld2410's set-up: seven commands written at once, so one 88-byte DP
+setup = b''.join(bytes.fromhex(h) for h in [
+    'FDFCFBFA0400FF00010004030201', 'FDFCFBFA0200A00004030201', 'FDFCFBFA0400A500010004030201',
+    'FDFCFBFA0200AB0004030201', 'FDFCFBFA0200AE0004030201', 'FDFCFBFA0200610004030201', 'FDFCFBFA0200FE0004030201'])
+cpu.ms(150)
+log0 = len(cpu.pin_log)
+r = xfer(cpu, frame(0x06, dp(202, 0, setup)), 150)   # ~100 ms to arrive at 9600
+check(len(setup) == 88 and r == [(3, 7, dp(202, 0, b''), True)], '88-byte DP 202 write accepted and answered at once')
+cpu.ms(900)
+check(decode_uart(cpu.pin_log[log0:], 'B', 3) == setup, 'all seven commands reach the radar, one at a time (no ACKs: 100 ms apart)')
+
+# flow control: a second big write is answered only once there's room again
+burst = b''.join(bytes.fromhex('FDFCFBFA0200%02X0004030201' % (0x10 + i)) for i in range(10))
+cpu.ms(200)
+log0 = len(cpu.pin_log)
+cpu.tx.clear()
+cpu.rx.extend(frame(0x06, dp(202, 0, burst)))
+cpu.ms(150)
+first = parse(bytes(cpu.tx))
+cpu.tx.clear()
+c0 = cpu.cycles
+cpu.rx.extend(frame(0x06, dp(202, 0, burst)))
+replied = None
+for _ in range(40):
+    cpu.ms(10)
+    if parse(bytes(cpu.tx)) and replied is None:
+        replied = (cpu.cycles - c0) * 1000 // 8_000_000
+check(first == [(3, 7, dp(202, 0, b''), True)], 'first 120-byte write answered')
+check(replied is not None and 180 <= replied <= 290, 'second write (~135 ms on the wire) answered late, queue nearly full: %s ms after it started, inside tuya\'s 300 ms' % replied)
+cpu.ms(2200)
+check(decode_uart(cpu.pin_log[log0:], 'B', 3) == burst + burst, 'nothing lost: both bursts reach the radar')
+
 # --- update hand-over --------------------------------------------------------
 check(cpu.ee == ee0, 'EEPROM never written in normal running')
 cpu.rx.extend(frame(0x0A, bytes(4)))
