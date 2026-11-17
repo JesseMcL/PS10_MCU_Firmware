@@ -19,7 +19,8 @@ extern volatile uint8_t radar_rx_idle_ms;
 void radar_tick_1ms(void);
 
 /* bytes from ESPHome for the radar: filtered (no baud change / factory reset),
- * then queued. Returns 0 if the queue is full. */
+ * then queued. A command that doesn't fit is dropped whole and answered with
+ * a failure ACK. Returns 0 if a non-command byte didn't fit. */
 uint8_t radar_write(uint8_t b);
 /* free space in that queue */
 uint8_t radar_tx_free(void);
@@ -27,6 +28,6 @@ uint8_t radar_tx_free(void);
 void radar_pump(void);
 
 /* counters, for diagnostics */
-extern uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked;
+extern uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked, radar_overflows;
 
 #endif

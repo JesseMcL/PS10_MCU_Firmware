@@ -50,8 +50,6 @@ enum {
 
 #define RELAY_CHUNK 48          /* radar bytes per DP 202 report */
 #define RELAY_IDLE_MS 3         /* send a partial chunk after this gap */
-#define RELAY_ACK_MAX_MS 100    /* tuya: gives up 300 ms after it started sending,
-                                   and a 136-byte write takes ~150 ms to arrive */
 #define LIGHT_PERIOD_MS 1000
 #define DEBOUNCE_MS 30
 
@@ -128,8 +126,6 @@ static uint8_t heartbeat_seen;
 static uint8_t output, led, presence, switch_on, button;
 static uint16_t light, light_reported;
 static uint16_t light_timer;
-static uint8_t relay_ack_due;   /* a DP 202 write still to be answered */
-static uint8_t relay_ack_ms;
 
 static void set_output(uint8_t on)
 {
@@ -197,10 +193,10 @@ static void dp_deliver(uint8_t len)
         case DP_RADAR:
             if (type == DP_RAW)
                 for (uint8_t k = 0; k < n; k++) radar_write(v[k]);
-            /* tuya: sends nothing more until it gets a 0x07, so answering
-             * only when there's room for another full write is flow control */
-            relay_ack_due = 1;
-            relay_ack_ms = 0;
+            /* answered at once: the 0x07 only says the frame arrived. A
+             * command the queue can't take gets a failure ACK from the radar
+             * side instead (radar.c), so the Tuya link never waits on it. */
+            relay_send(RELAY_CHUNK);
             break;
         default:                       /* unknown: echo, so tuya: isn't left waiting */
             tuya_begin(TUYA_DP_REPORT, 4u + n);
@@ -368,14 +364,9 @@ void main(void)
             ticks--;
             radar_tick_1ms();
             inputs_1ms();
-            if (relay_ack_due && relay_ack_ms < 255) relay_ack_ms++;
             if (++idle == 200) tuya_resync();   /* 200 ms gap inside a frame */
         }
         radar_pump();
-        if (relay_ack_due && (radar_tx_free() >= TUYA_RX_MAX - 4 || relay_ack_ms >= RELAY_ACK_MAX_MS)) {
-            relay_ack_due = 0;
-            relay_send(RELAY_CHUNK);
-        }
         if (online) {
             uint8_t n = radar_rx_count();
             if (n >= RELAY_CHUNK || (n && radar_rx_idle_ms >= RELAY_IDLE_MS)) relay_send(RELAY_CHUNK);

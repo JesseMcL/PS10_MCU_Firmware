@@ -23,10 +23,18 @@ interpreting them:
   Tuya frame, ~11 bytes of overhead, so batching matters: `virtual_uart`
   delivers everything written in one loop pass together, and `ld2410` writes
   a whole command (or its seven set-up commands) in one pass.
-- **Flow control:** `tuya:` sends nothing more until it gets a `0x07` back.
-  The MCU answers a DP 202 write (with whatever radar bytes are waiting, maybe
-  none) once its 256-byte queue has room for another full write, or after
-  100 ms, which keeps it inside `tuya:`'s 300 ms timeout.
+- **No blocking:** the MCU answers every DP 202 write with a `0x07` on
+  arrival (with whatever radar bytes are waiting, maybe none). Tuya has no
+  NACK: the `0x07` only says the frame arrived intact (a bad checksum is
+  dropped, and `tuya:` moves on after 300 ms). The Tuya link never waits on
+  the radar, so outputs and other datapoints aren't held up.
+- **Refusals happen at the LD2410 level:** a command that doesn't fit in the
+  MCU's 256-byte queue (radar slow or not answering) is dropped whole, never
+  in part, and answered with the radar's own failure ACK, as are the blocked
+  commands below. `ld2410` doesn't retry anything; it fires commands with
+  fixed delays and re-reads the radar's settings after a change, so a refused
+  or unanswered command shows up as unchanged settings, the same as with a
+  radar on a real UART.
 - **Filter:** LD2410 **set baud** (`0x00A1`) and **factory reset** (`0x00A2`)
   are never sent. Either would move the radar to a rate a software UART can't
   follow (factory reset means 256000), and only reprogramming its baud over a

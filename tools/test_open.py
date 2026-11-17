@@ -181,26 +181,34 @@ check(len(setup) == 88 and r == [(3, 7, dp(202, 0, b''), True)], '88-byte DP 202
 cpu.ms(900)
 check(decode_uart(cpu.pin_log[log0:], 'B', 3) == setup, 'all seven commands reach the radar, one at a time (no ACKs: 100 ms apart)')
 
-# flow control: a second big write is answered only once there's room again
+# a radar that doesn't answer: every write is still answered at once, and
+# what the queue can't take is refused whole, with failure ACKs
 burst = b''.join(bytes.fromhex('FDFCFBFA0200%02X0004030201' % (0x10 + i)) for i in range(10))
 cpu.ms(200)
 log0 = len(cpu.pin_log)
+replies, got = [], b''
+for k in range(3):
+    cpu.tx.clear()
+    c0 = cpu.cycles
+    cpu.rx.extend(frame(0x06, dp(202, 0, burst)))
+    for _ in range(30):
+        cpu.ms(10)
+        r = parse(bytes(cpu.tx))
+        if r:
+            replies.append((cpu.cycles - c0) * 1000 // 8_000_000)
+            got += b''.join(d[4:] for _, c, d, ok in r)
+            break
+check(len(replies) == 3 and max(replies) <= 200, 'three 120-byte writes each answered on arrival (%s ms after sending started)' % replies)
 cpu.tx.clear()
-cpu.rx.extend(frame(0x06, dp(202, 0, burst)))
-cpu.ms(150)
-first = parse(bytes(cpu.tx))
-cpu.tx.clear()
-c0 = cpu.cycles
-cpu.rx.extend(frame(0x06, dp(202, 0, burst)))
-replied = None
-for _ in range(40):
-    cpu.ms(10)
-    if parse(bytes(cpu.tx)) and replied is None:
-        replied = (cpu.cycles - c0) * 1000 // 8_000_000
-check(first == [(3, 7, dp(202, 0, b''), True)], 'first 120-byte write answered')
-check(replied is not None and 180 <= replied <= 290, 'second write (~135 ms on the wire) answered late, queue nearly full: %s ms after it started, inside tuya\'s 300 ms' % replied)
-cpu.ms(2200)
-check(decode_uart(cpu.pin_log[log0:], 'B', 3) == burst + burst, 'nothing lost: both bursts reach the radar')
+cpu.ms(3500)
+got += b''.join(d[4:] for _, c, d, ok in parse(bytes(cpu.tx)))
+sent = decode_uart(cpu.pin_log[log0:], 'B', 3)
+frames = [sent[i:i + 12] for i in range(0, len(sent), 12)]
+naks = [got[i:i + 14] for i in range(0, len(got), 14)]
+check(all(f in burst for f in frames), 'only whole commands reach the radar')
+check(all(n[:6] == bytes.fromhex('FDFCFBFA0400') and n[7:] == bytes.fromhex('01010004030201') for n in naks) and naks,
+      'the rest refused with failure ACKs (%d sent, %d refused)' % (len(frames), len(naks)))
+check(len(frames) + len(naks) == 30, 'every command either sent or refused')
 
 # --- update hand-over --------------------------------------------------------
 check(cpu.ee == ee0, 'EEPROM never written in normal running')

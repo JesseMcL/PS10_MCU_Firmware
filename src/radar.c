@@ -5,7 +5,9 @@
  *
  * Bytes from ESPHome pass through a filter that drops the LD2410 commands a
  * software UART can't recover from: set baud rate (0x00A1) and factory reset
- * (0x00A2, which restores 256000 baud). They get a failure ACK instead.
+ * (0x00A2, which restores 256000 baud). They get a failure ACK instead, and
+ * so does a command that doesn't fit in the queue: commands are queued whole
+ * or not at all.
  *
  * Then they're paced: after each command frame (footer 04 03 02 01) the next
  * byte waits until the radar has acknowledged (its own 04 03 02 01 footer) or
@@ -34,7 +36,7 @@ static volatile uint8_t rx_foot;    /* footer match progress, received bytes */
 static uint8_t tx_foot;             /* footer match progress, sent bytes */
 static const uint8_t footer[4] = {0x04, 0x03, 0x02, 0x01};
 volatile uint8_t radar_rx_idle_ms = 255;
-uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked;
+uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked, radar_overflows;
 
 #define TX_HIGH() (RTX_PORT |= (1u << RTX_BIT))
 #define TX_LOW()  (RTX_PORT &= (uint8_t)~(1u << RTX_BIT))
@@ -256,8 +258,18 @@ uint8_t radar_write(uint8_t b)
         uint16_t cmd = held[6] | ((uint16_t)held[7] << 8);
         remain = (len >= 2 ? len - 2 : 0) + 4;               /* rest of value + footer */
         nheld = 0;
+        if (len > 0x40) return 1;   /* not an LD2410 command (they're under 32): drop the header */
         if (cmd == 0x00A1 || cmd == 0x00A2) {
             radar_blocked++;
+            dropped_cmd = (uint8_t)cmd;
+            mode = 2;
+            return 1;
+        }
+        if (radar_tx_free() < 8 + remain) {
+            /* queue full (radar slow or not answering): drop the whole
+             * command, never part of one, and say so the way the radar
+             * would, with a failure ACK */
+            radar_overflows++;
             dropped_cmd = (uint8_t)cmd;
             mode = 2;
             return 1;
