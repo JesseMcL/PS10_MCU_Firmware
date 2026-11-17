@@ -2,16 +2,16 @@ name: Build
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches: ["release/**"]
+    tags: ["factory-*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write   # attach images to releases on tags
+  contents: write
 
 jobs:
-  build:
+  factory:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,70 +19,28 @@ jobs:
       - name: Install gputils
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gputils && gpasm -v
 
-      - name: Version
-        id: ver
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.1.0-dump"; fi
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      - name: Build
+      - name: Build (must be identical to the official image)
         run: |
           set -o pipefail
           mkdir -p build
-          python3 tools/build.py --version "${{ steps.ver.outputs.version }}" | tee build/summary.txt
+          python3 tools/build.py | tee build/summary.txt
 
       - name: Emulator test
-        run: python3 tools/test_dump.py "build/ps10-mcu-dump-${{ steps.ver.outputs.version }}.bin"
+        run: python3 tools/test_factory.py
 
-      - name: Manifest
-        # tuya_mcu_dfu release manifest. The image path is absolute (this tag's
-        # asset), so the copy at releases/latest/download/manifest.json always
-        # points at the image of the same release.
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}
-          RELEASE: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os
-          v = os.environ["VERSION"]
-          name = f"ps10-mcu-dump-{v}.bin"
-          data = open(f"build/{name}", "rb").read()
-          json.dump({
-              "name": "PS10 MCU dump firmware",
-              "version": v,
-              "builds": [{
-                  "chipFamily": "FT61E0A5",
-                  "ota": {
-                      "path": f"{os.environ['BASE']}/{name}",
-                      "md5": hashlib.md5(data).hexdigest(),
-                      "size": len(data),
-                      "release_url": os.environ["RELEASE"],
-                      "summary": f"PS10 MCU dump firmware {v}",
-                  },
-              }],
-          }, open("build/manifest.json", "w"), indent=2)
-          PY
-          cat build/manifest.json
-
-      - name: Summary
-        run: |
-          { echo '```'; cat build/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - run: '{ echo "\`\`\`"; cat build/summary.txt; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ps10-mcu-dump-${{ steps.ver.outputs.version }}
+          name: ps10-mcu-factory-1.0.5
           path: |
-            build/*.bin
-            build/*.hex
-            build/*.lst
+            build/ps10-mcu-factory-1.0.5.bin
             build/summary.txt
-            build/manifest.json
 
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/factory-')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" build/*.bin build/manifest.json build/summary.txt \
-            --title "$GITHUB_REF_NAME" --notes-file build/summary.txt
+          gh release create "$GITHUB_REF_NAME" build/ps10-mcu-factory-1.0.5.bin build/summary.txt \
+            --title "Factory firmware 1.0.5" --notes-file build/summary.txt
