@@ -15,11 +15,15 @@
 # button does, what the LED shows) is ordinary ESPHome config: change it here.
 #
 # MCU datapoints: 1 radar OUT pin (enum 0/1), 110 output, 111 status LED,
-# 112 light (raw 12-bit ADC), 113 switch input, 114 button, 202 radar bytes.
+# 112 light (raw 12-bit ADC), 113 switch input, 114 pushbutton, 202 radar bytes.
 
 substitutions:
   tuya_id: tuya_mcu
   uart_id: mcu_uart
+
+external_components:
+  - source: github://JesseMcL/esphome_virtual_uart@main
+    components: [virtual_uart]
 
 tuya:
   id: ${tuya_id}
@@ -81,7 +85,7 @@ binary_sensor:
       - switch.toggle: output
   - platform: tuya
     tuya_id: ${tuya_id}
-    id: button
+    id: pushbutton
     name: Button
     sensor_datapoint: 114
     on_click:
