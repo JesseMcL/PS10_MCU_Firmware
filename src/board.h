@@ -4,11 +4,14 @@
 #define BOARD_H
 
 /* outputs */
-#define OUT_PORT   LATA     /* triac drive (MOC3020 -> BTB24), high = on   [14] PA2 */
+/* Outputs are written through PORTx, as the stock firmware does, not LATx:
+ * on the PS10 the outputs stayed dead with LATx writes, although the
+ * datasheet lists the latches at the PIC16F1 addresses. */
+#define OUT_PORT   PORTA    /* triac drive (MOC3020 -> BTB24), high = on   [14] PA2 */
 #define OUT_BIT    2
-#define LED_PORT   LATB     /* status LED, high = on                        [4]  PB6 */
+#define LED_PORT   PORTB    /* status LED, high = on                        [4]  PB6 */
 #define LED_BIT    6
-#define RTX_PORT   LATB     /* radar soft UART, MCU -> LD2410C RX, idle high [11] PB3 */
+#define RTX_PORT   PORTB    /* radar soft UART, MCU -> LD2410C RX, idle high [11] PB3 */
 #define RTX_BIT    3
 
 /* inputs */
@@ -26,7 +29,7 @@
 #define TRISA_INIT 0x98
 #define TRISB_INIT 0x90
 #define TRISC_INIT 0x01
-#define LATB_INIT  0x08     /* PB3 (radar TX) idle high */
+#define PORTB_INIT 0x08     /* PB3 (radar TX) idle high */
 #define WPUB_INIT  0x18     /* pull-ups on the radar UART lines, as stock */
 #define ANSELA_INIT 0x04    /* AN2 analog */
 

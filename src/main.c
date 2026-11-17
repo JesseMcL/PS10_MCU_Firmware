@@ -31,7 +31,7 @@
 #include "tuya.h"
 
 #ifndef VERSION
-#define VERSION "0.2.0"
+#define VERSION "0.2.1"
 #endif
 
 BOOTLOADER_RAM;
@@ -289,12 +289,15 @@ static void hw_init(void)
     clrwdt();
     PCKEN = PCKEN_ADC | PCKEN_TIM4 | PCKEN_UART1;
 
-    LATA = 0;
-    LATB = LATB_INIT;
-    LATC = 0;
+    PORTA = 0;                  /* levels first, so the pins come up right */
+    PORTB = PORTB_INIT;
+    PORTC = 0;
     TRISA = TRISA_INIT;
     TRISB = TRISB_INIT;
     TRISC = TRISC_INIT;
+    PORTA = 0;                  /* and again after, in the order stock uses */
+    PORTB = PORTB_INIT;
+    PORTC = 0;
     WPUB = WPUB_INIT;
     ANSELA = ANSELA_INIT;
 
