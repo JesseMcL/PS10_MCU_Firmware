@@ -28,11 +28,11 @@
       }
     },
     {
-      "label": "Test dump firmware (emulator)",
+      "label": "Test firmware (emulator)",
       "type": "process",
       "command": "python",
       "args": [
-        "tools/test_dump.py"
+        "tools/test_open.py"
       ],
       "dependsOn": "Build",
       "group": "test",
@@ -46,25 +46,6 @@
         "tools/stock_probe.py"
       ],
       "problemMatcher": []
-    },
-    {
-      "label": "Dump log to binaries",
-      "type": "process",
-      "command": "python",
-      "args": [
-        "tools/dump2bin.py",
-        "${input:logFile}",
-        "-o",
-        "dump"
-      ],
-      "problemMatcher": []
-    }
-  ],
-  "inputs": [
-    {
-      "id": "logFile",
-      "type": "promptString",
-      "description": "ESPHome log file with ps10dump lines"
     }
   ]
 }

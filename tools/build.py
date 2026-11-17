@@ -19,9 +19,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import fmd  # noqa: E402
 
-NAME = 'ps10-mcu-dump'                 # image name
-DEFAULT_VERSION = '0.2.0-dump'
-SOURCES = ['src/dump.c', 'src/tuya.c']
+NAME = 'ps10-mcu'                      # image name
+DEFAULT_VERSION = '0.2.0'
+SOURCES = ['src/main.c', 'src/radar.c', 'src/tuya.c']
 
 CPU = '16F18346'
 STOCK = os.path.join(ROOT, 'reference', 'ps10-mcu-1.0.5.bin')

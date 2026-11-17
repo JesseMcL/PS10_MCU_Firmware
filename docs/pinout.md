@@ -6,8 +6,9 @@ Board NAS-PS10W6-MOS-V5, MCU U3 = FMD FT61E0A5-NRT (QFN20). Functions are
 datasheet's pin functions, not measured. Pin numbers are the datasheet's QFN20
 pinout (pin 1 at the dot, counter-clockwise; exposed pad = GND).
 
-**Verify with a meter before driving anything.** The dump firmware doesn't
-configure or drive any of these, only the Wi-Fi UART.
+**Verify with a meter before driving anything.** The open firmware drives
+these the way the stock firmware does (same TRIS/LAT/pull-ups for the pins it
+uses); the dump firmware (branch `dump`) drives only the Wi-Fi UART.
 
 | QFN20 pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
 |---|---|---|---|---|---|---|---|---|---|---|

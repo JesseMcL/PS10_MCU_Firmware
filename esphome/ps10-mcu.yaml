@@ -1,0 +1,91 @@
+# ESPHome package: entities for the PS10 open MCU firmware.
+#
+#   packages:
+#     mcu: !include { file: ps10-mcu.yaml, vars: { tuya_id: tuya_mcu } }
+#
+# `tuya_id` is the id of your `tuya:` component. If your config already has a
+# `tuya: on_datapoint_update:` list, move the entry below into it instead.
+# DP 202 (radar relay) needs the tuya_uart_tunnel component, not written yet.
+
+substitutions:
+  tuya_id: tuya_mcu
+
+tuya:
+  on_datapoint_update:
+    - sensor_datapoint: 107
+      datapoint_type: enum
+      then:
+        - lambda: |-
+            id(mcu_button).trigger(x == 1 ? "long_press" : "short_press");
+
+logger:
+  logs:
+    tuya: INFO            # DP 202 traffic would log ~10 lines a second at DEBUG
+
+binary_sensor:
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Presence
+    device_class: occupancy
+    sensor_datapoint: 1
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Switch input
+    sensor_datapoint: 106
+
+switch:
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Output
+    switch_datapoint: 101
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Auto on presence
+    entity_category: config
+    switch_datapoint: 103
+
+select:
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: LED mode
+    entity_category: config
+    enum_datapoint: 102
+    options:
+      0: "Off"
+      1: Follow output
+      2: "On"
+      3: Follow presence
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Switch input mode
+    entity_category: config
+    enum_datapoint: 108
+    options:
+      0: Report only
+      1: Toggle on press
+      2: Toggle on change
+
+sensor:
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Light level
+    sensor_datapoint: 104
+    state_class: measurement
+    accuracy_decimals: 0
+
+number:
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    name: Auto light threshold
+    entity_category: config
+    number_datapoint: 105
+    min_value: 0
+    max_value: 4095
+    step: 1
+    mode: box
+
+event:
+  - platform: template
+    id: mcu_button
+    name: Button
+    event_types: [short_press, long_press]

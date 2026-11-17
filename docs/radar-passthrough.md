@@ -13,7 +13,8 @@ baud. The radar's OUT pin goes to PB7.
 Custom MCU firmware forwards radar bytes both ways inside Tuya frames:
 
 - **Radar → ESPHome:** the MCU collects bytes from PB4 and reports them as raw
-  DP 202 (`0x07`), flushing at 64 bytes or after ~2 ms of silence.
+  DP 202 (`0x07`), flushing at 48 bytes or after ~3 ms of silence (a 9600-baud
+  character takes ~1 ms, so a gap of 3 is the end of an LD2410 frame).
 - **ESPHome → radar:** a raw DP 202 delivery (`0x06`) is written out on PB3. The
   MCU answers every `0x06` with a `0x07` straight away: ESPHome's `tuya:` waits
   for one (up to 300 ms) before sending the next command.
@@ -71,7 +72,11 @@ Wire the LD2410C TX/RX to free BK7231N pins (e.g. UART2) and leave PB3/PB4 as
 inputs. ESPHome's `ld2410` then runs natively at 9600 (or switch the radar to
 256000 once it's off the MCU). Needs a free UART on the module and a board mod.
 
-## Next steps
-1. Write the open MCU firmware: Tuya basics + `0x0A`, triac/LED/button/switch/LDR
-   as datapoints, soft UART at 9600, DP 202 tunnel with the filter above.
-2. Write `tuya_uart_tunnel` (fits alongside `tuya_mcu_dfu`).
+## Status
+1. MCU side: done in the open firmware (`src/radar.c`, `src/main.c`), including
+   the 0x00A1/0x00A2 filter, which answers with
+   `FD FC FB FA 04 00 <cmd> 01 01 00 04 03 02 01` (status 1 = failed).
+   Tested in the emulator (`tools/test_open.py`), not yet on hardware.
+2. ESPHome side: `tuya_uart_tunnel` still to write (fits alongside `tuya_mcu_dfu`).
+   Until then DP 202 is unused and the radar keeps whatever configuration it has;
+   presence comes from the OUT pin (DP 1).
