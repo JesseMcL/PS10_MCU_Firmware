@@ -55,3 +55,30 @@ command, so the module must ship set to 9600 (its default is 256000).
 1 presence (enum), 101 output mode, 102 motion state, 103 hold time, 104 detection
 distance, 105 motion sensitivity, 106 micro-motion sensitivity, 107 current
 distance, 108 light threshold, 109 output timer, 110 output, 111 status LED.
+
+## What the stock firmware configures on the radar
+
+Every LD2410C command the 1.0.5 firmware can send:
+
+| Command | When |
+|---|---|
+| `0x00FF` enable config, `0x0060` max gates / no-one duration, `0x0064` sensitivity × 9 gates, `0x00FE` end config | each configuration pass (boot, settings changes) |
+| `0x00A9` Bluetooth password **`123465`** | at the end of the next configuration pass after it's armed (below) |
+| `0x00A2` factory reset, `0x00A3` restart | never: they're in the same routine as end-config, which is only ever called for end-config |
+| `0x00A1` set baud, `0x00A4` Bluetooth on/off | not present |
+
+The password is armed (RAM flag 0x0A6, set by the routine at 0x16FE that
+also restarts the radar configuration) in two cases:
+
+- **The Wi-Fi module reports status `0x00` or `0x01`** (`0x03` command: smart-config
+  or AP pairing). Confirmed in emulation. So any unit that has been through
+  Tuya pairing, or a factory test that puts the module in pairing mode, gets the
+  password. ESPHome's `tuya:` only ever reports `0x02`-`0x04`, so it never arms it.
+- **The radar acknowledges a factory reset** (`0x01A2`), which this firmware never
+  sends: handling for a reset done some other way (e.g. over Bluetooth).
+
+The radar's baud is never set: the LD2410C has to come from the factory at
+9600. Since the firmware re-applies the password after a radar factory reset
+but has no way to change the baud, the radar's own factory default is
+probably 9600 too (an OEM variant). That's worth confirming before relying on
+a factory reset to recover a radar.
