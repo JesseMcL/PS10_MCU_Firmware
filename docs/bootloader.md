@@ -21,7 +21,12 @@ firmware should check `0x0A` first thing in its UART handling (and could offer
 
 The interrupt vector checks a RAM flag (0x020 bit 0, set when the application
 is started) and jumps to the application's vector at 0x604; otherwise it
-handles the bootloader's own UART receive and TIM4 tick.
+handles the bootloader's own UART receive and TIM4 tick. On the way it sets
+bit 0 of 0x7E: XC8's `int$flags` (in `btemp`), the compiler's "in an
+interrupt" flag, so the bootloader was built with XC8 too. An XC8 application
+sets and clears the same bit in its own interrupt entry and exit, so it's
+harmless, provided nothing else lives at 0x7E/0x7F while interrupts are on;
+`tools/build.py` checks that.
 
 ## In the bootloader
 Speaks Tuya at 9600 on USART1, frame version 3:

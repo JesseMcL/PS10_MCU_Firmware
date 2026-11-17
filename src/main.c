@@ -1,28 +1,28 @@
 /* PS10 open MCU firmware.
  *
  * Runs behind the stock bootloader (linked at 0x600). Talks Tuya MCU protocol
- * to the BK7231N (ESPHome tuya:) on USART1 at 9600, drives the triac and LED,
- * reads the button, switch input, radar OUT and LDR, and relays the LD2410C's
- * serial link to ESPHome in datapoint 202 (docs/radar-passthrough.md), so
- * ESPHome's ld2410: component configures and reads the radar itself.
+ * to the BK7231N (ESPHome tuya:) on USART1 at 9600. It only does I/O: it sets
+ * the triac and LED when told, reports the inputs as they are, and relays the
+ * LD2410C's serial link in datapoint 202. Every behaviour (what the button
+ * does, what the LED shows, when the output switches) belongs in ESPHome.
  *
- * Datapoints:
- *    1  presence        bool   ro   radar OUT pin
- *  101  output          bool   rw   triac
- *  102  LED mode        enum   rw   0 off, 1 follows output, 2 on, 3 follows presence
- *  103  auto            bool   rw   output follows presence (gated by 105)
- *  104  light           value  ro   LDR, raw 12-bit ADC (direction not yet checked)
- *  105  light threshold value  rw   auto only switches on below this; 0 = always
- *  106  switch input    bool   ro   true while PC0 is active (low)
- *  107  button          enum   ro   event: 0 short press, 1 long press (>= 3 s)
- *  108  switch mode     enum   rw   0 report only, 1 toggle on press, 2 toggle on any change
- *  202  radar relay     raw    rw   bytes to/from the LD2410C
+ * Datapoints (numbers as the stock firmware where the function is the same):
+ *    1  presence   enum   ro   radar OUT pin: 0 none, 1 presence
+ *  110  output     bool   rw   triac
+ *  111  status LED bool   rw   LED (stock: LED follows the output when on)
+ *  112  light      value  ro   LDR, raw 12-bit ADC, sampled every second
+ *  113  switch     bool   ro   switch input (PC0) active, 30 ms debounce
+ *  114  button     bool   ro   button (PA3) pressed, 30 ms debounce
+ *  202  radar      raw    rw   bytes to/from the LD2410C, any chunking
+ *
+ * Inputs are reported when they change, and all of them on a status query.
+ * The output and LED start off.
  *
  * Updates: 0x0A writes FF to data EEPROM 0x00/0x01 (so the bootloader's CRC
  * check fails) and resets into the bootloader. Holding the button while
  * powering up for 3 s does the same, as a way back if anything goes wrong.
- * Settings live in data EEPROM 0x20-0x27; the stock firmware's (0x02-0x0F,
- * 0x7F) are left alone so a rollback finds them as they were.
+ * Nothing else is written to the EEPROM, so the stock settings stay for a
+ * rollback.
  */
 #include "ft61e0a5.h"
 #include "board.h"
@@ -39,32 +39,20 @@ static const char product[] = "{\"p\":\"ps10open\",\"v\":\"" VERSION "\",\"m\":0
 
 enum {
     DP_PRESENCE = 1,
-    DP_OUTPUT = 101,
-    DP_LED = 102,
-    DP_AUTO = 103,
-    DP_LIGHT = 104,
-    DP_THRESHOLD = 105,
-    DP_SWITCH = 106,
-    DP_BUTTON = 107,
-    DP_SWITCH_MODE = 108,
+    DP_OUTPUT = 110,
+    DP_LED = 111,
+    DP_LIGHT = 112,
+    DP_SWITCH = 113,
+    DP_BUTTON = 114,
     DP_RADAR = 202,
 };
 
 #define RELAY_CHUNK 48          /* radar bytes per DP 202 report */
 #define RELAY_IDLE_MS 3         /* send a partial chunk after this gap */
-#define LIGHT_PERIOD_MS 5000
-#define LIGHT_DELTA 32
+#define LIGHT_PERIOD_MS 1000
 #define DEBOUNCE_MS 30
-#define LONG_PRESS_MS 3000
 
-/* --- settings (data EEPROM) ----------------------------------------------- */
-#define EE_BASE 0x20
-#define EE_MAGIC 0x5A
-static struct {
-    uint8_t led_mode, auto_on, switch_mode;
-    uint16_t threshold;
-} cfg;
-
+/* --- data EEPROM: only the bootloader hand-over ----------------------------- */
 static uint8_t ee_read(uint8_t a)
 {
     EEADRL = a;
@@ -91,32 +79,6 @@ static void ee_write(uint8_t a, uint8_t v)
     INTCON |= gie;
     while (EECON1 & EE_WR) clrwdt();
     EECON1 = 0;
-}
-
-static void cfg_load(void)
-{
-    if (ee_read(EE_BASE) != EE_MAGIC) {
-        cfg.led_mode = 1;
-        cfg.auto_on = 0;
-        cfg.switch_mode = 1;
-        cfg.threshold = 0;
-        return;
-    }
-    cfg.led_mode = ee_read(EE_BASE + 1) & 3;
-    cfg.auto_on = ee_read(EE_BASE + 2) & 1;
-    cfg.switch_mode = ee_read(EE_BASE + 3);
-    if (cfg.switch_mode > 2) cfg.switch_mode = 1;
-    cfg.threshold = ee_read(EE_BASE + 4) | ((uint16_t)ee_read(EE_BASE + 5) << 8);
-}
-
-static void cfg_save(void)
-{
-    ee_write(EE_BASE + 1, cfg.led_mode);
-    ee_write(EE_BASE + 2, cfg.auto_on);
-    ee_write(EE_BASE + 3, cfg.switch_mode);
-    ee_write(EE_BASE + 4, (uint8_t)cfg.threshold);
-    ee_write(EE_BASE + 5, (uint8_t)(cfg.threshold >> 8));
-    ee_write(EE_BASE, EE_MAGIC);
 }
 
 static void enter_bootloader(void)
@@ -160,25 +122,22 @@ void __interrupt() isr(void)
 /* --- state ---------------------------------------------------------------- */
 static uint8_t online;          /* tuya: has asked for the datapoints */
 static uint8_t heartbeat_seen;
-static uint8_t output, presence, switch_active;
-static uint16_t light;
-static uint16_t light_reported = 0xFFFF;
+static uint8_t output, led, presence, switch_on, button;
+static uint16_t light, light_reported;
 static uint16_t light_timer;
 
-static void led_update(void)
-{
-    uint8_t on = cfg.led_mode == 2 || (cfg.led_mode == 1 && output) || (cfg.led_mode == 3 && presence);
-    if (on) LED_PORT |= 1u << LED_BIT;
-    else LED_PORT &= (uint8_t)~(1u << LED_BIT);
-}
-
-static void set_output(uint8_t on, uint8_t report)
+static void set_output(uint8_t on)
 {
     output = on ? 1 : 0;
     if (output) OUT_PORT |= 1u << OUT_BIT;
     else OUT_PORT &= (uint8_t)~(1u << OUT_BIT);
-    led_update();
-    if (report && online) tuya_report_bool(DP_OUTPUT, output);
+}
+
+static void set_led(uint8_t on)
+{
+    led = on ? 1 : 0;
+    if (led) LED_PORT |= 1u << LED_BIT;
+    else LED_PORT &= (uint8_t)~(1u << LED_BIT);
 }
 
 static uint16_t adc_read(uint8_t channel)
@@ -194,14 +153,12 @@ static uint16_t adc_read(uint8_t channel)
 
 static void report_all(void)
 {
-    tuya_report_bool(DP_PRESENCE, presence);
+    tuya_report_enum(DP_PRESENCE, presence);
     tuya_report_bool(DP_OUTPUT, output);
-    tuya_report_enum(DP_LED, cfg.led_mode);
-    tuya_report_bool(DP_AUTO, cfg.auto_on);
+    tuya_report_bool(DP_LED, led);
     tuya_report_value(DP_LIGHT, light);
-    tuya_report_value(DP_THRESHOLD, cfg.threshold);
-    tuya_report_bool(DP_SWITCH, switch_active);
-    tuya_report_enum(DP_SWITCH_MODE, cfg.switch_mode);
+    tuya_report_bool(DP_SWITCH, switch_on);
+    tuya_report_bool(DP_BUTTON, button);
     light_reported = light;
 }
 
@@ -215,11 +172,6 @@ static void relay_send(uint8_t n)
     tuya_end();
 }
 
-static uint32_t be32(const uint8_t *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint16_t)p[2] << 8) | p[3];
-}
-
 static void dp_deliver(uint8_t len)
 {
     uint8_t i = 0;
@@ -230,29 +182,12 @@ static void dp_deliver(uint8_t len)
         if (tuya_rx[i + 2] != 0 || i + 4 + n > len) break;
         switch (dp) {
         case DP_OUTPUT:
-            set_output(v[0], 0);
+            set_output(v[0]);
             tuya_report_bool(DP_OUTPUT, output);
             break;
         case DP_LED:
-            if (v[0] <= 3) { cfg.led_mode = v[0]; cfg_save(); led_update(); }
-            tuya_report_enum(DP_LED, cfg.led_mode);
-            break;
-        case DP_AUTO:
-            cfg.auto_on = v[0] ? 1 : 0;
-            cfg_save();
-            tuya_report_bool(DP_AUTO, cfg.auto_on);
-            break;
-        case DP_THRESHOLD:
-            if (n == 4) {
-                uint32_t t = be32(v);
-                cfg.threshold = t > 4095 ? 4095 : (uint16_t)t;
-                cfg_save();
-            }
-            tuya_report_value(DP_THRESHOLD, cfg.threshold);
-            break;
-        case DP_SWITCH_MODE:
-            if (v[0] <= 2) { cfg.switch_mode = v[0]; cfg_save(); }
-            tuya_report_enum(DP_SWITCH_MODE, cfg.switch_mode);
+            set_led(v[0]);
+            tuya_report_bool(DP_LED, led);
             break;
         case DP_RADAR:
             if (type == DP_RAW)
@@ -302,70 +237,38 @@ static void handle(uint8_t cmd, uint8_t len)
 }
 
 /* --- inputs (every ms) ----------------------------------------------------- */
-static uint8_t btn_cnt, btn_down, sw_cnt, sw_level, pres_cnt;
-static uint16_t btn_ms;
+static uint8_t btn_cnt, sw_cnt;
 
-static void auto_output(void)
+/* debounced input: reports when the level has been different for DEBOUNCE_MS */
+static uint8_t debounce(uint8_t now, uint8_t *state, uint8_t *cnt)
 {
-    if (!cfg.auto_on) return;
-    if (presence && !output && (cfg.threshold == 0 || light < cfg.threshold)) set_output(1, 1);
-    else if (!presence && output) set_output(0, 1);
+    if (now == *state) {
+        *cnt = 0;
+        return 0;
+    }
+    if (++*cnt < DEBOUNCE_MS) return 0;
+    *cnt = 0;
+    *state = now;
+    return 1;
 }
 
 static void inputs_1ms(void)
 {
-    /* button: debounced, short press toggles the output, long press reported */
-    uint8_t pressed = !((BTN_PORT >> BTN_BIT) & 1);
-    if (pressed != btn_down) {
-        if (++btn_cnt >= DEBOUNCE_MS) {
-            btn_cnt = 0;
-            btn_down = pressed;
-            if (pressed) {
-                btn_ms = 0;
-            } else if (btn_ms < LONG_PRESS_MS) {
-                set_output(!output, 1);
-                if (online) tuya_report_enum(DP_BUTTON, 0);
-            }
-        }
-    } else {
-        btn_cnt = 0;
-    }
-    if (btn_down && btn_ms < LONG_PRESS_MS && ++btn_ms == LONG_PRESS_MS && online)
-        tuya_report_enum(DP_BUTTON, 1);
+    if (debounce(!((BTN_PORT >> BTN_BIT) & 1), &button, &btn_cnt) && online)
+        tuya_report_bool(DP_BUTTON, button);
+    if (debounce(!((SW_PORT >> SW_BIT) & 1), &switch_on, &sw_cnt) && online)
+        tuya_report_bool(DP_SWITCH, switch_on);
 
-    /* switch input */
-    uint8_t active = !((SW_PORT >> SW_BIT) & 1);
-    if (active != switch_active) {
-        if (++sw_cnt >= DEBOUNCE_MS) {
-            sw_cnt = 0;
-            switch_active = active;
-            if (online) tuya_report_bool(DP_SWITCH, switch_active);
-            if (cfg.switch_mode == 2 || (cfg.switch_mode == 1 && active)) set_output(!output, 1);
-        }
-    } else {
-        sw_cnt = 0;
-    }
-
-    /* radar OUT */
-    uint8_t p = (RDR_PORT >> RDR_BIT) & 1;
+    uint8_t p = (RDR_PORT >> RDR_BIT) & 1;   /* a clean logic output: no debounce */
     if (p != presence) {
-        if (++pres_cnt >= DEBOUNCE_MS) {
-            pres_cnt = 0;
-            presence = p;
-            if (online) tuya_report_bool(DP_PRESENCE, presence);
-            led_update();
-            auto_output();
-        }
-    } else {
-        pres_cnt = 0;
+        presence = p;
+        if (online) tuya_report_enum(DP_PRESENCE, presence);
     }
 
-    /* light */
     if (++light_timer >= LIGHT_PERIOD_MS) {
         light_timer = 0;
         light = adc_read(LDR_CHANNEL);
-        if (online && (light_reported == 0xFFFF ||
-                       (light > light_reported ? light - light_reported : light_reported - light) >= LIGHT_DELTA)) {
+        if (online && light != light_reported) {
             tuya_report_value(DP_LIGHT, light);
             light_reported = light;
         }
@@ -428,21 +331,20 @@ static void boot_escape(void)
             if (++ms >= 3000) enter_bootloader();
         }
     }
-    btn_down = 0;
-    LED_PORT &= (uint8_t)~(1u << LED_BIT);
+    set_led(0);
 }
 
 void main(void)
 {
     boot_app_flag |= 0x01;      /* keep the bootloader passing interrupts to us */
     hw_init();
-    cfg_load();
     INTCON = GIE | PEIE;
     boot_escape();
     presence = (RDR_PORT >> RDR_BIT) & 1;
-    switch_active = !((SW_PORT >> SW_BIT) & 1);
+    switch_on = !((SW_PORT >> SW_BIT) & 1);
     light = adc_read(LDR_CHANNEL);
-    set_output(0, 0);
+    set_output(0);
+    set_led(0);
 
     uint8_t idle = 0;
     for (;;) {
@@ -460,6 +362,7 @@ void main(void)
             inputs_1ms();
             if (++idle == 200) tuya_resync();   /* 200 ms gap inside a frame */
         }
+        radar_pump();
         if (online) {
             uint8_t n = radar_rx_count();
             if (n >= RELAY_CHUNK || (n && radar_rx_idle_ms >= RELAY_IDLE_MS)) relay_send(RELAY_CHUNK);

@@ -5,19 +5,34 @@
  *
  * Bytes from ESPHome pass through a filter that drops the LD2410 commands a
  * software UART can't recover from: set baud rate (0x00A1) and factory reset
- * (0x00A2, which restores 256000 baud). They get a failure ACK instead. */
+ * (0x00A2, which restores 256000 baud). They get a failure ACK instead.
+ *
+ * Then they're paced: after each command frame (footer 04 03 02 01) the next
+ * byte waits until the radar has acknowledged (its own 04 03 02 01 footer) or
+ * PACE_MS have passed. Bytes arrive in arbitrary chunks, so a sender that
+ * writes several commands at once (ESPHome's ld2410 writes "enable
+ * configuration" and the command together) still gets them to the radar one
+ * at a time, as it expects. */
 #include "ft61e0a5.h"
 #include "board.h"
 #include "radar.h"
 
 #define RXQ 128                 /* power of two */
-#define TXQ 128
+#define TXQ 32                  /* being sent */
+#define PQ 128                  /* filtered, waiting for the pacer */
+#define PACE_MS 100
 #define HALF_BIT (RADAR_BAUD_ARR / 2)
 
 static volatile uint8_t rxq[RXQ], rx_head, rx_tail;
 static volatile uint8_t txq[TXQ], tx_head, tx_tail;
 static volatile uint8_t tx_shift, tx_bit;   /* tx_bit 0 idle, 1..8 data, 9 stop, 10 stop sent */
 static volatile uint8_t rx_shift, rx_bit;
+static uint8_t pq[PQ], pq_head, pq_tail;
+static uint8_t pace_wait, pace_ms;
+static volatile uint8_t ack_seen;
+static volatile uint8_t rx_foot;    /* footer match progress, received bytes */
+static uint8_t tx_foot;             /* footer match progress, sent bytes */
+static const uint8_t footer[4] = {0x04, 0x03, 0x02, 0x01};
 volatile uint8_t radar_rx_idle_ms = 255;
 uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked;
 
@@ -108,8 +123,13 @@ void radar_isr(void)
             rx_shift = (uint8_t)(rx_shift >> 1) | (level ? 0x80 : 0);
             rx_bit++;
         } else {
-            if (level) rx_push(rx_shift);
-            else radar_frame_errors++;
+            if (level) {
+                rx_push(rx_shift);
+                rx_foot = (rx_shift == footer[rx_foot]) ? rx_foot + 1 : (rx_shift == footer[0]);
+                if (rx_foot == 4) { rx_foot = 0; ack_seen = 1; }
+            } else {
+                radar_frame_errors++;
+            }
             goto done;
         }
         return;
@@ -120,9 +140,14 @@ done:
     }
 }
 
+static uint8_t tx_idle(void) { return tx_bit == 0 && tx_head == tx_tail; }
+
 void radar_tick_1ms(void)
 {
     if (radar_rx_idle_ms != 255) radar_rx_idle_ms++;
+    if (pace_wait && tx_idle()) {   /* count from the end of the command */
+        if (ack_seen || ++pace_ms >= PACE_MS) pace_wait = 0;
+    }
 }
 
 uint8_t radar_rx_count(void) { return (rx_head - rx_tail) & (RXQ - 1); }
@@ -134,9 +159,9 @@ uint8_t radar_rx_get(void)
     return b;
 }
 
-uint8_t radar_tx_free(void) { return (uint8_t)(TXQ - 1 - ((tx_head - tx_tail) & (TXQ - 1))); }
+uint8_t radar_tx_free(void) { return (uint8_t)(PQ - 1 - ((pq_head - pq_tail) & (PQ - 1))); }
 
-static uint8_t tx_put(uint8_t b)
+static uint8_t send(uint8_t b)
 {
     uint8_t next = (tx_head + 1) & (TXQ - 1);
     if (next == tx_tail) return 0;
@@ -153,6 +178,31 @@ static uint8_t tx_put(uint8_t b)
     }
     INTCON |= gie;
     return 1;
+}
+
+static uint8_t tx_put(uint8_t b)    /* to the pacer */
+{
+    uint8_t next = (pq_head + 1) & (PQ - 1);
+    if (next == pq_tail) return 0;
+    pq[pq_head] = b;
+    pq_head = next;
+    return 1;
+}
+
+void radar_pump(void)
+{
+    while (!pace_wait && pq_tail != pq_head) {
+        uint8_t b = pq[pq_tail];
+        if (!send(b)) return;           /* transmit queue full */
+        pq_tail = (pq_tail + 1) & (PQ - 1);
+        tx_foot = (b == footer[tx_foot]) ? tx_foot + 1 : (b == footer[0]);
+        if (tx_foot == 4) {
+            tx_foot = 0;
+            ack_seen = 0;
+            pace_ms = 0;
+            pace_wait = 1;
+        }
+    }
 }
 
 /* --- command filter ------------------------------------------------------ */

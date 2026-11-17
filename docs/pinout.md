@@ -27,7 +27,7 @@ uses); the dump firmware (branch `dump`) drives only the Wi-Fi UART.
 | Radar UART RX (LD2410C TX → MCU) | **PB4** (pin 10) | in | high | External interrupt EINT4 (`EPS1` selects PB4) catches the start bit, then TIM2 samples 8 bits into the frame buffer parsed for `F4 F3 F2 F1` / `FD FC FB FA`. |
 | Wi-Fi UART TX (MCU → BK7231N) | **PA6** (pin 19) | out, open drain | high | USART1 at 9600 8N1; `AFP0` left at reset = PA6, `UR1OD` set. In emulation this UART answers ESPHome's `tuya:` exactly as on the device. |
 | Wi-Fi UART RX (BK7231N → MCU) | **PA7** (pin 1) | in | high | USART1, `AFP1` left at reset = PA7. |
-| LDR (light sensor) | **PA4** (pin 16), AN2 | analog in | high | ADC CHS = 2 = AN2 = PA4 (`ANSELA` bit 2), 5-sample average, compared against DP 108. |
+| LDR (light sensor) | **PA4** (pin 16), AN2 | analog in | high | ADC CHS = 2 = AN2 = PA4 (`ANSELA` bit 2). Stock: 5-sample average, compared against DP 108. Which way it moves with light isn't checked yet. |
 | Zero crossing | none | | high | No pin is used for timing the triac: PA2 is held high while on. The MOC3020 is the non-zero-crossing type, so none is needed. |
 
 Other pins are outputs driven low at init: PA0, PA1, PA5, PB0-PB2, PB5, PC1

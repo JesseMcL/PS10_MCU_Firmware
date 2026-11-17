@@ -6,10 +6,12 @@ BK7231N Wi-Fi module and an LD2410C radar. Installed and rolled back over the
 Tuya serial link with [`tuya_mcu_dfu`](../esphome_tuya_mcu_dfu), through the
 stock bootloader, so no programmer is needed.
 
-This is the **open firmware**: Tuya MCU protocol to ESPHome's `tuya:`,
-the triac, LED, button, switch input, radar OUT and LDR as datapoints, and the
-LD2410C's serial link relayed in DP 202 so ESPHome's `ld2410:` can configure and
-read the radar. Written in C (XC8).
+This is the **open firmware**, in C (XC8). It only does I/O: it sets the triac
+and LED when told, reports the button, switch input, radar OUT pin and LDR as
+they are, and relays the LD2410C's serial link in DP 202 so ESPHome's `ld2410:`
+reads and configures the radar itself. Every behaviour (what the button does,
+what the LED shows, when the output switches) lives in ESPHome, where it's easy
+to inspect and change.
 
 | Branch / tag | |
 |---|---|
@@ -43,27 +45,33 @@ Ways back if something's wrong:
 
 ## Datapoints
 
+Numbers are the stock firmware's where the function is the same.
+
 | DP | Type | | |
 |---|---|---|---|
-| 1 | bool | ro | presence (radar OUT, PB7) |
-| 101 | bool | rw | output (triac) |
-| 102 | enum | rw | LED: 0 off, 1 follows output, 2 on, 3 follows presence |
-| 103 | bool | rw | auto: output follows presence |
-| 104 | value | ro | light (LDR, raw 12-bit ADC; reported every 5 s on a change of 32+) |
-| 105 | value | rw | auto only switches on below this light level; 0 = always |
-| 106 | bool | ro | switch input (PC0) active |
-| 107 | enum | ro | button event: 0 short press, 1 long press (3 s) |
-| 108 | enum | rw | switch input: 0 report only, 1 toggle on press, 2 toggle on any change |
-| 202 | raw | rw | radar serial relay ([docs/radar-passthrough.md](docs/radar-passthrough.md)) |
+| 1 | enum | ro | radar OUT pin (PB7): 0 none, 1 presence |
+| 110 | bool | rw | output (triac, PA2) |
+| 111 | bool | rw | status LED (PB6). Stock: "LED follows the output"; here the LED itself |
+| 112 | value | ro | light: LDR (PA4/AN2), raw 12-bit ADC, sampled every second, sent when it changes |
+| 113 | bool | ro | switch input (PC0) active (low), 30 ms debounce |
+| 114 | bool | ro | button (PA3) pressed, 30 ms debounce |
+| 202 | raw | rw | radar serial relay, in chunks of any size ([docs/radar-passthrough.md](docs/radar-passthrough.md)) |
 
-A short button press toggles the output, without ESPHome. Settings (102, 103,
-105, 108) are kept in data EEPROM 0x20-0x25; the stock firmware's (0x02-0x0F,
-0x7F) are left alone, so a rollback to 1.0.5 finds them. The output starts off
-after a power cut. Product info: `{"p":"ps10open","v":"0.2.0","m":0}`.
+Values are raw: no scaling, averaging or thresholds. The debounce on the two
+contacts is the only filtering. Inputs are reported when they change and on a
+status query (`0x08`). The output and LED start off after a power cut. Nothing
+is written to the data EEPROM except the bootloader hand-over, so the stock
+settings (0x02-0x0F, 0x7F) are still there for a rollback to 1.0.5. Product
+info: `{"p":"ps10open","v":"0.2.0","m":0}`.
 
-[`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) is an ESPHome package with
-entities for all of these. DP 202 needs the `tuya_uart_tunnel` component, which
-isn't written yet; until then the radar keeps its current configuration.
+### ESPHome
+
+[`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) is a package with entities
+for the I/O, the default behaviour (button click and switch input toggle the
+output, LED follows the output), `ld2410:` on a
+[virtual UART](https://github.com/JesseMcL/esphome_virtual_uart) carried by
+DP 202, and Home Assistant actions to set the radar's gate thresholds, range and
+timeout, Bluetooth password and engineering mode.
 
 ## Build
 
@@ -128,8 +136,8 @@ platform would only wrap the same calls.
 ## Layout
 
 ```
-src/main.c                 open firmware: Tuya handling, datapoints, inputs, settings
-src/radar.c, radar.h       software UART to the LD2410C (TIM1/TIM2/EINT4) and the command filter
+src/main.c                 open firmware: Tuya handling, datapoints, inputs
+src/radar.c, radar.h       software UART to the LD2410C (TIM1/TIM2/EINT4), command filter and pacing
 src/board.h                pin assignments and port set-up
 src/tuya.c, tuya.h         Tuya MCU protocol framing
 src/ft61e0a5.h             FT61E0A5 registers (from the datasheet)
@@ -139,6 +147,6 @@ tools/emu.py               PIC16F1 emulator with the inferred FT61E0A5 periphera
 tools/mcu.py               FT61E0A5 peripherals for the emulator: pins, timers, EINT4, ADC
 tools/test_open.py         emulator test of the open firmware
 tools/stock_probe.py       runs the stock image, shows pin activity per command
-esphome/ps10-mcu.yaml      ESPHome package: entities for the datapoints
+esphome/ps10-mcu.yaml      ESPHome package: I/O entities, behaviour, ld2410 over DP 202, radar actions
 reference/ps10-mcu-1.0.5.bin  official 1.0.5 image (md5 9bd5f57f…)
 ```

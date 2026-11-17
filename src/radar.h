@@ -19,10 +19,12 @@ extern volatile uint8_t radar_rx_idle_ms;
 void radar_tick_1ms(void);
 
 /* bytes from ESPHome for the radar: filtered (no baud change / factory reset),
- * then queued for transmission. Returns 0 if the transmit queue is full. */
+ * then queued. Returns 0 if the queue is full. */
 uint8_t radar_write(uint8_t b);
-/* free space in the transmit queue */
+/* free space in that queue */
 uint8_t radar_tx_free(void);
+/* moves queued bytes to the transmitter, one command at a time; call often */
+void radar_pump(void);
 
 /* counters, for diagnostics */
 extern uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked;

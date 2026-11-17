@@ -1,91 +1,186 @@
-# ESPHome package: entities for the PS10 open MCU firmware.
+# ESPHome package for a PS10 running the open MCU firmware.
 #
+#   external_components:
+#     - source: github://JesseMcL/esphome_virtual_uart
+#       components: [virtual_uart]
 #   packages:
-#     mcu: !include { file: ps10-mcu.yaml, vars: { tuya_id: tuya_mcu } }
+#     mcu: !include { file: ps10-mcu.yaml, vars: { tuya_id: tuya_mcu, uart_id: mcu_uart } }
 #
-# `tuya_id` is the id of your `tuya:` component. If your config already has a
+# `tuya_id` / `uart_id` are the ids of your `tuya:` component and of the UART
+# it uses. Give `tuya:` that `uart_id:` explicitly: with the radar's virtual
+# UART there's more than one. If your config already has a
 # `tuya: on_datapoint_update:` list, move the entry below into it instead.
-# DP 202 (radar relay) needs the tuya_uart_tunnel component, not written yet.
+#
+# The MCU only does I/O. Everything here that decides something (what the
+# button does, what the LED shows) is ordinary ESPHome config: change it here.
+#
+# MCU datapoints: 1 radar OUT pin (enum 0/1), 110 output, 111 status LED,
+# 112 light (raw 12-bit ADC), 113 switch input, 114 button, 202 radar bytes.
 
 substitutions:
   tuya_id: tuya_mcu
+  uart_id: mcu_uart
 
 tuya:
+  id: ${tuya_id}
+  uart_id: ${uart_id}
   on_datapoint_update:
-    - sensor_datapoint: 107
-      datapoint_type: enum
+    - sensor_datapoint: 202
+      datapoint_type: raw
       then:
-        - lambda: |-
-            id(mcu_button).trigger(x == 1 ? "long_press" : "short_press");
+        - virtual_uart.push:
+            id: radar_uart
+            data: !lambda return x;
 
 logger:
   logs:
-    tuya: INFO            # DP 202 traffic would log ~10 lines a second at DEBUG
+    tuya: INFO            # DP 202 carries ~10 radar frames a second
+
+# --- LD2410C, through the MCU ---------------------------------------------------
+virtual_uart:
+  - id: radar_uart
+    baud_rate: 9600       # what the radar runs at on the MCU's software UART
+    on_tx:
+      - lambda: id(${tuya_id}).force_set_raw_datapoint_value(202, x);
+
+ld2410:
+  id: radar
+  uart_id: radar_uart
+
+# --- the MCU's I/O ----------------------------------------------------------------
+switch:
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    id: output
+    name: Output
+    switch_datapoint: 110
+    on_turn_on:
+      - switch.turn_on: status_led
+    on_turn_off:
+      - switch.turn_off: status_led
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    id: status_led
+    name: Status LED
+    entity_category: config
+    switch_datapoint: 111
 
 binary_sensor:
   - platform: tuya
     tuya_id: ${tuya_id}
-    name: Presence
+    name: Radar OUT
     device_class: occupancy
+    entity_category: diagnostic
     sensor_datapoint: 1
   - platform: tuya
     tuya_id: ${tuya_id}
     name: Switch input
-    sensor_datapoint: 106
-
-switch:
+    sensor_datapoint: 113
+    on_press:
+      - switch.toggle: output
   - platform: tuya
     tuya_id: ${tuya_id}
-    name: Output
-    switch_datapoint: 101
-  - platform: tuya
-    tuya_id: ${tuya_id}
-    name: Auto on presence
-    entity_category: config
-    switch_datapoint: 103
-
-select:
-  - platform: tuya
-    tuya_id: ${tuya_id}
-    name: LED mode
-    entity_category: config
-    enum_datapoint: 102
-    options:
-      0: "Off"
-      1: Follow output
-      2: "On"
-      3: Follow presence
-  - platform: tuya
-    tuya_id: ${tuya_id}
-    name: Switch input mode
-    entity_category: config
-    enum_datapoint: 108
-    options:
-      0: Report only
-      1: Toggle on press
-      2: Toggle on change
+    id: button
+    name: Button
+    sensor_datapoint: 114
+    on_click:
+      - min_length: 50ms
+        max_length: 1s
+        then:
+          - switch.toggle: output
+  - platform: ld2410
+    ld2410_id: radar
+    has_target:
+      name: Presence
+    has_moving_target:
+      name: Moving target
+    has_still_target:
+      name: Still target
 
 sensor:
   - platform: tuya
     tuya_id: ${tuya_id}
-    name: Light level
-    sensor_datapoint: 104
+    name: Light (raw)
+    sensor_datapoint: 112
     state_class: measurement
     accuracy_decimals: 0
+  - platform: ld2410
+    ld2410_id: radar
+    moving_distance:
+      name: Moving distance
+    still_distance:
+      name: Still distance
+    moving_energy:
+      name: Moving energy
+    still_energy:
+      name: Still energy
+    detection_distance:
+      name: Detection distance
 
-number:
-  - platform: tuya
-    tuya_id: ${tuya_id}
-    name: Auto light threshold
-    entity_category: config
-    number_datapoint: 105
-    min_value: 0
-    max_value: 4095
-    step: 1
-    mode: box
+text_sensor:
+  - platform: ld2410
+    ld2410_id: radar
+    version:
+      name: Radar firmware
 
-event:
-  - platform: template
-    id: mcu_button
-    name: Button
-    event_types: [short_press, long_press]
+# --- radar configuration, as Home Assistant actions ---------------------------------
+# esphome.<device>_radar_set_gate: one gate (0-8), or all gates with gate 255
+# esphome.<device>_radar_set_range: max moving/still gate (2-8), timeout (s)
+# esphome.<device>_radar_bluetooth_password: 6 ASCII characters
+# esphome.<device>_radar_engineering_mode: per-gate energies on/off
+# Each command is wrapped in enable/end configuration; the MCU sends them to
+# the radar one at a time.
+api:
+  actions:
+    - action: radar_set_gate
+      variables: { gate: int, moving: int, still: int }
+      then:
+        - uart.write:
+            id: radar_uart
+            data: !lambda |-
+              auto le32 = [](std::vector<uint8_t> &v, uint16_t word, uint32_t value) {
+                v.insert(v.end(), {uint8_t(word), uint8_t(word >> 8), uint8_t(value), uint8_t(value >> 8),
+                                   uint8_t(value >> 16), uint8_t(value >> 24)});
+              };
+              std::vector<uint8_t> v = {0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 0xFF, 0x00, 0x01, 0x00, 0x04, 0x03, 0x02, 0x01,
+                                        0xFD, 0xFC, 0xFB, 0xFA, 0x14, 0x00, 0x64, 0x00};
+              le32(v, 0, gate >= 0 && gate <= 8 ? gate : 0xFFFF);
+              le32(v, 1, clamp(moving, 0, 100));
+              le32(v, 2, clamp(still, 0, 100));
+              v.insert(v.end(), {0x04, 0x03, 0x02, 0x01, 0xFD, 0xFC, 0xFB, 0xFA, 0x02, 0x00, 0xFE, 0x00, 0x04, 0x03, 0x02, 0x01});
+              return v;
+    - action: radar_set_range
+      variables: { max_moving_gate: int, max_still_gate: int, timeout: int }
+      then:
+        - uart.write:
+            id: radar_uart
+            data: !lambda |-
+              auto le32 = [](std::vector<uint8_t> &v, uint16_t word, uint32_t value) {
+                v.insert(v.end(), {uint8_t(word), uint8_t(word >> 8), uint8_t(value), uint8_t(value >> 8),
+                                   uint8_t(value >> 16), uint8_t(value >> 24)});
+              };
+              std::vector<uint8_t> v = {0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 0xFF, 0x00, 0x01, 0x00, 0x04, 0x03, 0x02, 0x01,
+                                        0xFD, 0xFC, 0xFB, 0xFA, 0x14, 0x00, 0x60, 0x00};
+              le32(v, 0, clamp(max_moving_gate, 2, 8));
+              le32(v, 1, clamp(max_still_gate, 2, 8));
+              le32(v, 2, clamp(timeout, 0, 65535));
+              v.insert(v.end(), {0x04, 0x03, 0x02, 0x01, 0xFD, 0xFC, 0xFB, 0xFA, 0x02, 0x00, 0xFE, 0x00, 0x04, 0x03, 0x02, 0x01});
+              return v;
+    - action: radar_bluetooth_password
+      variables: { password: string }
+      then:
+        - if:
+            condition:
+              lambda: return password.size() == 6;
+            then:
+              - bluetooth_password.set:
+                  id: radar
+                  password: !lambda return password;
+            else:
+              - logger.log:
+                  level: WARN
+                  format: "Bluetooth password must be 6 characters"
+    - action: radar_engineering_mode
+      variables: { enable: bool }
+      then:
+        - lambda: id(radar).set_engineering_mode(enable);

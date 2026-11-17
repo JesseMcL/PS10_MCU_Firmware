@@ -131,14 +131,16 @@ SFR(ADCON1, 0x09E);
 SFR(ADCON2, 0x09F);
 #define AD_GO 0x02
 
-/* RAM the stock bootloader relies on while the application runs. Define both
- * once (BOOTLOADER_RAM in one .c file) so the compiler never allocates them:
+/* RAM the stock bootloader relies on while the application runs. Define it
+ * once (BOOTLOADER_RAM in one .c file) so the compiler never allocates it:
  *   0x020 bit 0  set by the bootloader before it jumps to 0x600; its interrupt
- *                vector only passes interrupts on to 0x604 while it is set
- *   0x07E bit 0  set by that vector on every interrupt (common RAM) */
+ *                vector only passes interrupts on to 0x604 while it is set.
+ * The vector also sets bit 0 of 0x07E on every interrupt. That's XC8's own
+ * convention (int$flags in btemp, 0x7E), which our interrupt entry does too,
+ * so 0x7E isn't reserved here; tools/build.py checks that only the interrupt
+ * handler and the start-up code (interrupts off) touch 0x7E/0x7F. */
 #define BOOTLOADER_RAM \
-    volatile uint8_t boot_app_flag __at(0x020); \
-    volatile uint8_t boot_isr_scratch __at(0x07E)
+    volatile uint8_t boot_app_flag __at(0x020)
 
 #define clrwdt() asm("clrwdt")
 #define nop()    asm("nop")

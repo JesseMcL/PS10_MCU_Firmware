@@ -58,6 +58,27 @@ def find_dfp():
     sys.exit('PIC16F1xxxx device pack not found: unzip the .atpack and set XC8_DFP to its xc8 folder (see README.md)')
 
 
+def check_btemp(app, map_file):
+    """The bootloader's interrupt vector sets bit 0 of 0x7E (XC8's btemp /
+    int$flags) on every interrupt. Fail if code that runs with interrupts on,
+    other than the interrupt handler, uses 0x7E/0x7F."""
+    syms = {}
+    text = open(map_file).read()
+    for m in re.finditer(r'^(\S+)\s+\S+\s+([0-9A-F]{4})\s*$', text, re.M):
+        syms.setdefault(m.group(1), int(m.group(2), 16))
+    addrs = sorted(set(syms.values()))
+    allowed = [(syms['__pintentry'], syms['__end_of__initialization'] + 1)]   # isr, start-up
+    for name, a in syms.items():
+        if name.startswith('clear_ram'):
+            allowed.append((a, min(x for x in addrs if x > a)))
+    for addr, w in sorted(app.items()):
+        top = w >> 12
+        if top == 1 or (top == 0 and w >= 0x80 and not 0x100 <= w < 0x180):   # file operations
+            if w & 0x7F in (0x7E, 0x7F) and not any(lo <= addr < hi for lo, hi in allowed):
+                sys.exit('0x%04X uses 0x%02X (btemp) outside the interrupt handler and start-up: '
+                         'the bootloader\'s vector would corrupt it' % (addr, w & 0x7F))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--version', default=DEFAULT_VERSION)
@@ -91,6 +112,7 @@ def main():
     app = {k: v for k, v in fmd.read_ihex(os.path.join(obj, NAME + '.hex')).items() if k < 0x8000}
     if min(app) < fmd.APP_START or max(app) >= fmd.WORDS:
         sys.exit('code must stay in 0x600-0x27FF, got 0x%X-0x%X' % (min(app), max(app)))
+    check_btemp(app, stem + '.map')
     words = fmd.load_words(STOCK)[:fmd.APP_START] + [0x3FFF] * (fmd.WORDS - fmd.APP_START)
     for addr, w in app.items():
         words[addr] = fmd.pic_to_fmd(w)
