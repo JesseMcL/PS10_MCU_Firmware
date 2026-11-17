@@ -2,13 +2,23 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, dump]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write   # attach images to releases on tags
+  contents: write   # releases on tags
+
+env:
+  # MPLAB XC8 and the PIC16F1xxxx device pack, pinned by version and hash.
+  # Override the URLs with repository variables if Microchip moves them.
+  XC8_VERSION: "4.00"
+  XC8_URL: ${{ vars.XC8_URL || 'https://ww1.microchip.com/downloads/aemDocuments/documents/DEV/ProductDocuments/SoftwareTools/xc8-v4.00-full-install-linux-x64-installer.run' }}
+  XC8_SHA256: 735d65bab08fa4392da9db9b5a624d1b327436aef57d237192658921e88cfd06
+  DFP_VERSION: "1.32.471"
+  DFP_URL: ${{ vars.DFP_URL || 'https://packs.download.microchip.com/Microchip.PIC16F1xxxx_DFP.1.32.471.atpack' }}
+  DFP_SHA256: d6ae65e0f12e6ac755cea873497d54e53a9efe4bf94cbe6b30bcd4d8ce6520be
 
 jobs:
   build:
@@ -16,66 +26,76 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install gputils
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gputils && gpasm -v
+      - name: Cache XC8 and device pack
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/microchip
+          key: xc8-${{ env.XC8_VERSION }}-dfp-${{ env.DFP_VERSION }}
+
+      - name: Install XC8 and device pack
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/xc8.run "$XC8_URL"
+          echo "$XC8_SHA256  /tmp/xc8.run" | sha256sum -c -
+          chmod +x /tmp/xc8.run
+          /tmp/xc8.run --mode unattended --unattendedmodeui none --prefix "$HOME/microchip/xc8/v$XC8_VERSION"
+          curl -fsSL -o /tmp/dfp.atpack "$DFP_URL"
+          echo "$DFP_SHA256  /tmp/dfp.atpack" | sha256sum -c -
+          mkdir -p "$HOME/microchip/dfp/$DFP_VERSION"
+          unzip -q /tmp/dfp.atpack -d "$HOME/microchip/dfp/$DFP_VERSION"
+
+      - name: Toolchain paths
+        run: |
+          echo "XC8_CC=$HOME/microchip/xc8/v$XC8_VERSION/bin/xc8-cc" >> "$GITHUB_ENV"
+          echo "XC8_DFP=$HOME/microchip/dfp/$DFP_VERSION/xc8" >> "$GITHUB_ENV"
 
       - name: Version
         id: ver
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="0.1.0-dump"; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v=""; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build
         run: |
           set -o pipefail
           mkdir -p build
-          python3 tools/build.py --version "${{ steps.ver.outputs.version }}" | tee build/summary.txt
+          python3 tools/build.py ${{ steps.ver.outputs.version && format('--version {0}', steps.ver.outputs.version) || '' }} | tee build/summary.txt
 
       - name: Emulator test
-        run: python3 tools/test_dump.py "build/ps10-mcu-dump-${{ steps.ver.outputs.version }}.bin"
+        run: for t in tools/test_*.py; do python3 "$t"; done
 
       - name: Manifest
-        # tuya_mcu_dfu release manifest. The image path is absolute (this tag's
-        # asset), so the copy at releases/latest/download/manifest.json always
-        # points at the image of the same release.
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-          BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}
-          RELEASE: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
         run: |
           python3 - <<'PY'
-          import hashlib, json, os
-          v = os.environ["VERSION"]
-          name = f"ps10-mcu-dump-{v}.bin"
-          data = open(f"build/{name}", "rb").read()
+          import glob, hashlib, json, os, re
+          img = sorted(glob.glob("build/*.bin"))[-1]
+          name = os.path.basename(img)
+          version = re.search(r"-(\d[^/]*)\.bin$", name).group(1)
+          ref = os.environ["GITHUB_REF_NAME"]
+          base = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/releases"
+          data = open(img, "rb").read()
           json.dump({
-              "name": "PS10 MCU dump firmware",
-              "version": v,
-              "builds": [{
-                  "chipFamily": "FT61E0A5",
-                  "ota": {
-                      "path": f"{os.environ['BASE']}/{name}",
-                      "md5": hashlib.md5(data).hexdigest(),
-                      "size": len(data),
-                      "release_url": os.environ["RELEASE"],
-                      "summary": f"PS10 MCU dump firmware {v}",
-                  },
-              }],
+              "name": "PS10 MCU firmware",
+              "version": version,
+              "builds": [{"chipFamily": "FT61E0A5", "ota": {
+                  "path": f"{base}/download/{ref}/{name}",
+                  "md5": hashlib.md5(data).hexdigest(), "size": len(data),
+                  "release_url": f"{base}/tag/{ref}", "summary": f"PS10 MCU firmware {version}"}}],
           }, open("build/manifest.json", "w"), indent=2)
           PY
           cat build/manifest.json
 
-      - name: Summary
-        run: |
-          { echo '```'; cat build/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - run: '{ echo "\`\`\`"; cat build/summary.txt; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ps10-mcu-dump-${{ steps.ver.outputs.version }}
+          name: firmware-${{ github.sha }}
           path: |
             build/*.bin
             build/*.hex
-            build/*.lst
+            build/*.map
             build/summary.txt
             build/manifest.json
 

@@ -6,9 +6,10 @@ BK7231N Wi-Fi module and an LD2410C radar. Installed and rolled back over the
 Tuya serial link with [`tuya_mcu_dfu`](../esphome_tuya_mcu_dfu), through the
 stock bootloader, so no programmer is needed.
 
-First firmware: **`ps10_dump`**, which reads out the parts of the chip an
-update image doesn't contain: the bootloader (0x000-0x5FF), the configuration
-space and the data EEPROM.
+This branch (`dump`): **`ps10_dump`**, which reads out the parts of the chip
+an update image doesn't contain: the bootloader (0x000-0x5FF), the
+configuration space and the data EEPROM. Written in C (XC8) since 0.2.0; the
+original assembler version (0.1.0, tag `v0.1.0-dump`) produced the first dump.
 
 | | |
 |---|---|
@@ -32,14 +33,13 @@ the triac and LED lines) would recover the MCU. What reduces that risk:
 - It implements the bootloader contract exactly: `0x0A` → EEPROM 0x00/0x01 =
   `FF`, `RESET`.
 
-What can't be tested without hardware: real timing, and anything the
-bootloader checks that the stock image happens to satisfy. If the bootloader's
-1K sector is read-protected (`FSECPB0`), its words read back as repeats of the
-last value instead of the code; the rest of the dump still works.
+The assembler version (0.1.0) has run on a PS10 and dumped everything,
+bootloader included (it isn't read-protected). The C version (0.2.0) passes
+the same emulator test, but hasn't run on hardware yet.
 
 ## What the dump firmware does
 
-- Answers `tuya:`: heartbeat, product info `{"p":"ps10dump","v":"0.1.0-dump","m":0}`,
+- Answers `tuya:`: heartbeat, product info `{"p":"ps10dump","v":"0.2.0-dump","m":0}`,
   working mode, Wi-Fi state, status query (DP 200).
 - Dump requests in DP 200 (raw `[space, addr_hi, addr_lo, count]`), replies in
   DP 201: `F` program flash (words), `C` configuration space (words, `CFGS`),
@@ -50,30 +50,49 @@ last value instead of the code; the rest of the dump still works.
 
 ## Build
 
-Needs Python 3 and [gputils](https://gputils.sourceforge.io) (`gpasm`) on PATH.
+Needs Python 3, **MPLAB XC8** (v4.00 used here; the free licence is enough)
+and Microchip's **PIC16F1xxxx device pack** (DFP 1.32.471). XC8 compiles for a
+PIC16F18346, which has the same core as the FT61E0A5 (5-bit bank select,
+16-level stack); `tools/build.py` keeps the code in 0x600-0x27FF and the RAM in
+banks 0-12, then converts the opcodes to the FMD encoding. The chip's own
+registers come from `src/ft61e0a5.h`, never from the PIC part's headers.
 
 ```
-python tools/build.py              # build/ps10-mcu-dump-0.1.0-dump.bin + hashes
+python tools/build.py              # build/<name>-<version>.bin + hashes + tuya_mcu_dfu block
 python tools/test_dump.py          # run it in the emulator
 ```
 
-In VS Code: **Terminal → Run Build Task** (build), or **Run Task** for the
-tests and the stock-firmware probe.
+**Toolchain:**
+- **XC8:** install from microchip.com (Windows or Linux installer). `build.py`
+  finds `xc8-cc` on PATH or in the default install folder
+  (`C:\Program Files\Microchip\xc8\v4.00`, `/opt/microchip/xc8/v4.00`), or set
+  `XC8_CC` to it.
+- **Device pack:** download `Microchip.PIC16F1xxxx_DFP.1.32.471.atpack` from
+  packs.download.microchip.com, unzip it (it's a zip), and set `XC8_DFP` to its
+  `xc8` folder. MPLAB X's pack manager location is found automatically.
 
-PlatformIO isn't used: it has no toolchain for 8-bit PIC/FMD parts, and a
-custom platform would only wrap the same `gpasm` call.
+In VS Code: **Terminal → Run Build Task** (build), or **Run Task** for the
+emulator tests.
+
+**GitHub Actions** downloads both (pinned by version and SHA-256), caches the
+installed toolchain (`actions/cache`, so later runs restore it in seconds),
+builds, runs the emulator tests, and on a `v*` tag publishes a release with the
+image and a `tuya_mcu_dfu` manifest.
+
+PlatformIO isn't used: it has no toolchain for these parts, and a custom
+platform would only wrap the same calls.
 
 ## Flash, dump, roll back
 
-1. Copy `build/ps10-mcu-dump-0.1.0-dump.bin` next to the device YAML and point
+1. Copy `build/ps10-mcu-dump-0.2.0-dump.bin` next to the device YAML and point
    `tuya_mcu_dfu` at it (the build prints the block):
    ```yaml
    update:
      - platform: tuya_mcu_dfu
        name: MCU firmware
        firmware:
-         path: ps10-mcu-dump-0.1.0-dump.bin
-         version: "0.1.0-dump"
+         path: ps10-mcu-dump-0.2.0-dump.bin
+         version: "0.2.0-dump"
          sha256: <from the build output>
    ```
    Add [`esphome/ps10-mcu-dump.yaml`](esphome/ps10-mcu-dump.yaml) as a package.
@@ -98,8 +117,10 @@ custom platform would only wrap the same `gpasm` call.
 ## Layout
 
 ```
-src/ps10_dump.asm          dump firmware (gpasm, PIC16F1 syntax)
-tools/build.py             assemble, convert to FMD encoding, lay out the 20480-byte image
+src/dump.c                 dump firmware (XC8)
+src/tuya.c, tuya.h         Tuya MCU protocol framing
+src/ft61e0a5.h             FT61E0A5 registers (from the datasheet)
+tools/build.py             compile, convert to FMD encoding, lay out the 20480-byte image
 tools/fmd.py               FMD <-> PIC encoding, image helpers
 tools/emu.py               PIC16F1 emulator with the inferred FT61E0A5 peripherals
 tools/test_dump.py         emulator test of the dump firmware
