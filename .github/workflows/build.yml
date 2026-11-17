@@ -40,7 +40,10 @@ jobs:
           curl -fsSL -o /tmp/xc8.run "$XC8_URL"
           echo "$XC8_SHA256  /tmp/xc8.run" | sha256sum -c -
           chmod +x /tmp/xc8.run
-          /tmp/xc8.run --mode unattended --unattendedmodeui none --prefix "$HOME/microchip/xc8/v$XC8_VERSION"
+          # the installer refuses to run without root; hand the files back to
+          # the runner user so actions/cache can save and restore them
+          sudo /tmp/xc8.run --mode unattended --unattendedmodeui none --prefix "$HOME/microchip/xc8/v$XC8_VERSION"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/microchip"
           curl -fsSL -o /tmp/dfp.atpack "$DFP_URL"
           echo "$DFP_SHA256  /tmp/dfp.atpack" | sha256sum -c -
           mkdir -p "$HOME/microchip/dfp/$DFP_VERSION"
