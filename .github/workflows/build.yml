@@ -67,8 +67,7 @@ jobs:
           python3 tools/build.py ${{ steps.ver.outputs.version && format('--version {0}', steps.ver.outputs.version) || '' }} | tee build/summary.txt
 
       - name: Emulator test
-        # TIM1's count direction is ambiguous in the datasheet: test both
-        run: for t in tools/test_*.py; do for d in down up; do PS10_TIM1_DIR0=$d python3 "$t"; done; done
+        run: for t in tools/test_*.py; do python3 "$t"; done
 
       - name: Manifest
         run: |

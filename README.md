@@ -85,8 +85,9 @@ registers come from `src/ft61e0a5.h`, never from the PIC part's headers.
 
 ```
 python tools/build.py              # build/<name>-<version>.bin + hashes + tuya_mcu_dfu block
-python tools/test_open.py          # run it in the emulator (about 2 minutes);
-                                   # PS10_TIM1_DIR0=up|down picks TIM1's count direction (default down)
+python tools/test_open.py          # run it in the emulator (a few minutes);
+                                   # PS10_TEST_LIGHT=1 / PS10_TEST_DIAG=1 add the slow light and
+                                   # DP 250 tests; PS10_TIM1_DIR0=up runs TIM1 counting up
 ```
 
 **Toolchain:**

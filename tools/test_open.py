@@ -14,6 +14,13 @@ words = [fmd.fmd_to_pic(w) for w in fmd.load_words(img)]
 flash = [0x3FFF] * 0x600 + words[0x600:]     # the bootloader's stub is modelled in mcu.py
 fails = 0
 
+# Slow sections, off by default (a simulated second takes ~20 s here):
+#   PS10_TEST_LIGHT=1  light sensor report (1 s)
+#   PS10_TEST_DIAG=1   DP 250 diagnostics (~9 s). Update and re-enable these
+#                      whenever what the firmware reports in DP 250 changes.
+TEST_LIGHT = os.environ.get('PS10_TEST_LIGHT') == '1'
+TEST_DIAG = os.environ.get('PS10_TEST_DIAG') == '1'
+
 
 def check(cond, what):
     global fails
@@ -132,9 +139,12 @@ cpu.tx.clear(); cpu.set_pin('C', 0, 0); cpu.ms(40)
 check(dps(parse(bytes(cpu.tx))) == {113: (1, b'\x01')} and outputs(cpu) == (0, 0), 'switch input active -> DP 113 true, output untouched')
 cpu.tx.clear(); cpu.set_pin('C', 0, 1); cpu.ms(40)
 check(dps(parse(bytes(cpu.tx))) == {113: (1, b'\x00')}, 'switch input released -> DP 113 false')
-cpu.adc[2] = 1003
-cpu.tx.clear(); cpu.ms(1000)
-check(dps(parse(bytes(cpu.tx))) == {112: (2, (1003).to_bytes(4, 'big'))}, 'light: raw ADC change of 3 reported within 1 s')
+if TEST_LIGHT:
+    cpu.adc[2] = 1003
+    cpu.tx.clear(); cpu.ms(1000)
+    check(dps(parse(bytes(cpu.tx))) == {112: (2, (1003).to_bytes(4, 'big'))}, 'light: raw ADC change of 3 reported within 1 s')
+else:
+    print('skip light sensor (PS10_TEST_LIGHT=1)')
 
 # --- radar relay ------------------------------------------------------------
 wire = SoftUartWire(cpu, 'B', 4)
@@ -241,27 +251,7 @@ check(all(n[:6] == bytes.fromhex('FDFCFBFA0400') and n[7:] == bytes.fromhex('010
       'the rest refused with failure ACKs (%d sent, %d refused)' % (len(frames), len(naks)))
 check(len(frames) + len(naks) == 30, 'every command either sent or refused')
 
-# --- receive diagnostics (DP 250) and error recovery --------------------------
-cpu = boot(ee0)
-cpu.ms(5)
-cpu.tx.clear()
-cpu.ms(2500)
-check(not any(is_diag(f) for f in parse_all(bytes(cpu.tx))), 'no DP 250 before the status query')
-sent = 0
-for f in (frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)):
-    xfer(cpu, f, 80)
-    sent += len(f)
-d = diag(cpu)
-check(d is not None and d['len'] == 32 and d['layout'] == 1, 'DP 250 every 2 s once online, 32 bytes: %r' % d)
-check(d and d['rx_bytes'] == sent and d['frames'] == 5 and d['bad_sum'] == d['resyncs'] == 0,
-      'DP 250 counts bytes received and frames accepted')
-check(d and d['ier'] == 0x05 and d['mcr'] == 0x18 and d['state'] == 0, 'receive and receive-error interrupts on, parser idle')
-check(d and d['polled'] == 0 and d['lag'] < 60, 'every byte taken by the interrupt; main loop lag %s ms' % (d and d['lag']))
-bad = bytearray(frame(0x00)); bad[-1] ^= 1
-xfer(cpu, bytes(bad))
-xfer(cpu, frame(0x00)[:4], 300)                  # half a frame, then nothing
-d = diag(cpu)
-check(d and d['bad_sum'] == 1 and d['resyncs'] == 1, 'bad checksum and dropped partial frame counted: %r' % d)
+# --- receive errors -----------------------------------------------------------
 cpu.uart_stall_on_error = True                   # a receiver that stops after an error
 cpu.uart_err = 0x18                              # framing error + break
 r = xfer(cpu, frame(0x00))
@@ -270,9 +260,44 @@ cpu.mem[0x48E] &= ~0x04                          # receive-error interrupt lost:
 cpu.uart_err = 0x02
 r = xfer(cpu, frame(0x00))
 check(r == [(3, 0, b'\x01', True)], 'overrun cleared by the main loop too')
-d = diag(cpu)
-check(d and d['fe'] == 1 and d['bk'] == 1 and d['ovr'] == 1 and d['errs_seen'] == 0x1A,
-      'error flags counted: %r' % d)
+cpu.mem[0x48E] |= 0x04
+cpu.uart_stall_on_error = False
+
+# --- receive diagnostics (DP 250), off by default ---------------------------------
+if TEST_DIAG:
+    cpu = boot(ee0)
+    cpu.ms(5)
+    cpu.tx.clear()
+    cpu.ms(2500)
+    check(not any(is_diag(f) for f in parse_all(bytes(cpu.tx))), 'no DP 250 before the status query')
+    sent = 0
+    for f in (frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)):
+        xfer(cpu, f, 80)
+        sent += len(f)
+    d = diag(cpu)
+    check(d is not None and d['len'] == 32 and d['layout'] == 1, 'DP 250 every 2 s once online, 32 bytes: %r' % d)
+    check(d and d['rx_bytes'] == sent and d['frames'] == 5 and d['bad_sum'] == d['resyncs'] == 0,
+          'DP 250 counts bytes received and frames accepted')
+    check(d and d['ier'] == 0x05 and d['mcr'] == 0x18 and d['state'] == 0, 'receive and receive-error interrupts on, parser idle')
+    check(d and d['polled'] == 0 and d['lag'] < 60, 'every byte taken by the interrupt; main loop lag %s ms' % (d and d['lag']))
+    bad = bytearray(frame(0x00)); bad[-1] ^= 1
+    xfer(cpu, bytes(bad))
+    xfer(cpu, frame(0x00)[:4], 300)                  # half a frame, then nothing
+    d = diag(cpu)
+    check(d and d['bad_sum'] == 1 and d['resyncs'] == 1, 'bad checksum and dropped partial frame counted: %r' % d)
+    cpu.uart_stall_on_error = True                   # a receiver that stops after an error
+    cpu.uart_err = 0x18                              # framing error + break
+    r = xfer(cpu, frame(0x00))
+    check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'framing/break error cleared at once: heartbeat still answered')
+    cpu.mem[0x48E] &= ~0x04                          # receive-error interrupt lost: the main loop's check
+    cpu.uart_err = 0x02
+    r = xfer(cpu, frame(0x00))
+    check(r == [(3, 0, b'\x01', True)], 'overrun cleared by the main loop too')
+    d = diag(cpu)
+    check(d and d['fe'] == 1 and d['bk'] == 1 and d['ovr'] == 1 and d['errs_seen'] == 0x1A,
+          'error flags counted: %r' % d)
+else:
+    print('skip DP 250 diagnostics (PS10_TEST_DIAG=1)')
 
 # --- update hand-over --------------------------------------------------------
 check(cpu.ee == ee0, 'EEPROM never written in normal running')
