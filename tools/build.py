@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import fmd  # noqa: E402
 
 NAME = 'ps10-mcu'                      # image name
-DEFAULT_VERSION = '0.2.5'
+DEFAULT_VERSION = '0.2.6'
 SOURCES = ['src/main.c', 'src/radar.c', 'src/tuya.c']
 
 CPU = '16F18346'
@@ -98,7 +98,7 @@ def main():
     cmd = [xc8, '-mcpu=' + CPU, '-mdfp=' + dfp, '-O2', '-std=c99',
            '-mcodeoffset=0x600',              # reset 0x600, interrupt 0x604
            '-mrom=default,-2800-3FFF',        # 10K words
-           '-mram=default,-670-CBF',          # banks 0-12 only
+           '-mram=default,-650-CBF',          # banks 0-12, and bank 12 has only 48 bytes (0x620-0x64F)
            '-Wl,-Map=' + stem + '.map', '-mwarn=0',
            '-DVERSION="%s"' % a.version, '-o', os.path.join(obj, NAME + '.hex')] + \
           [os.path.join(ROOT, s) for s in SOURCES]

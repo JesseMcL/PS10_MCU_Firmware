@@ -23,6 +23,8 @@ class Reset(Exception):
     pass
 
 
+MISSING_RAM = []
+
 class Cpu:
     def __init__(self, flash, eeprom=None, config=None, flash_size=0x2800):
         self.flash = list(flash) + [0x3FFF] * (flash_size - len(flash))
@@ -40,6 +42,7 @@ class Cpu:
         self.rd_at = None                       # (cycle, cycles needed) of the last NVM read
         self.trace_sfr = set()
         self.sfr_log = []
+        self.missing_ram = MISSING_RAM     # accesses to RAM the chip lacks, from every Cpu
         self.in_isr = False
         self.isr_vector = 0x604
         self.shadow = None
@@ -81,6 +84,13 @@ class Cpu:
         if kind == 'mem':
             self.write(x, v)
 
+    @staticmethod
+    def missing(a):
+        """GPR the FT61E0A5 doesn't have: banks 13-30, and bank 12 has only 48
+        bytes (0x620-0x64F). Reads give 0, writes are lost."""
+        f, bank = a & 0x7F, (a >> 7) & 0x1F
+        return 0x20 <= f < 0x70 and (13 <= bank <= 30 or (bank == 12 and f >= 0x50))
+
     def read(self, a):
         f = a & 0x7F
         if f == INDF0:
@@ -91,6 +101,9 @@ class Cpu:
             return self.mem[f] if f != PCL else self.pc & 0xFF
         if f >= 0x70:
             return self.mem[f]
+        if self.missing(a):
+            self.missing_ram.append(('r', self.pc, a))
+            return 0
         if a == UART_DATA:
             return self.rx.popleft() if self.rx else 0
         if a == UART_STAT:
@@ -117,6 +130,9 @@ class Cpu:
                 self.jumped = True
                 return
             self.mem[f] = v
+            return
+        if self.missing(a):
+            self.missing_ram.append(('w', self.pc, a))
             return
         if a in self.trace_sfr:
             self.sfr_log.append(('w', self.pc, a, v))

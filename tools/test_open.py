@@ -100,7 +100,7 @@ check(outputs(cpu) == (0, 0) and cpu.pin('B', 3) == 1, 'triac and LED off, radar
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x00', True)], 'first heartbeat -> [00]')
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x01', True)], 'next heartbeat -> [01]')
 r = xfer(cpu, frame(0x01), 60)
-check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.5","m":0}', True)], 'product info %r' % r)
+check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.6","m":0}', True)], 'product info %r' % r)
 check(xfer(cpu, frame(0x02)) == [(3, 2, b'', True)], 'working mode -> empty 0x02')
 check(xfer(cpu, frame(0x03, b'\x04')) == [(3, 3, b'', True)], 'wifi state -> empty 0x03')
 r = dps(xfer(cpu, frame(0x08), 80))
@@ -340,6 +340,10 @@ try:
     check(False, 'button held at power-up resets into the bootloader')
 except Reset:
     check(cpu.ee[0] == 0xFF and cpu.ee[1] == 0xFF, 'button held 3 s at power-up -> EEPROM 0x00/0x01 = FF, RESET')
+
+import emu
+check(not emu.MISSING_RAM, 'no access to RAM the FT61E0A5 lacks (bank 12 above 0x64F): %s'
+      % ['%s %04X %03X' % x for x in emu.MISSING_RAM[:5]])
 
 print('\n%d failure(s)' % fails)
 sys.exit(1 if fails else 0)
