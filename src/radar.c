@@ -62,6 +62,7 @@ void radar_init(void)
     TIM1PSCRL = 0;
     TIM1ARRH = RADAR_BAUD_ARR >> 8;
     TIM1ARRL = RADAR_BAUD_ARR & 0xFF;
+    TIM1EGR = TIM_U;            /* UG: counter to the start of a period (0 up, ARR down); URS keeps UIF clear */
     TIM1SR1 = TIM_U;
     TIM1IER = TIM_U;
     TIM2CR1 = TIM_URS;
@@ -172,9 +173,11 @@ static uint8_t send(uint8_t b)
     uint8_t gie = INTCON & GIE;
     INTCON &= (uint8_t)~GIE;
     if (tx_bit == 0) {
+        /* Just enable: the counter was stopped at an update event, so it's
+         * at the start of a period whichever way TIM1 counts. (The datasheet
+         * contradicts itself on T1DIR; writing the counter to 0 here made the
+         * start bit one tick long if TIM1 counts down.) */
         tx_next();
-        TIM1CNTRH = 0;
-        TIM1CNTRL = 0;
         TIM1SR1 = TIM_U;
         TIM1CR1 |= TIM_CEN;
     }

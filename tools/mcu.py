@@ -6,6 +6,7 @@ Timing model: 16 MHz SysClk, 2T instruction cycle -> 8 M instructions/s.
 TIM1/TIM2 on 2 x HIRC (32 MHz) = 4 counts per instruction when TCKSRC selects
 it (011), else SysClk = 2; TIM4 on SysClk = 2. Registers per the datasheet.
 """
+import os
 import collections
 from emu import Cpu, INTCON, BSR, PCLATH
 
@@ -37,6 +38,10 @@ class Mcu(Cpu):
         self.pins = {'A': 0xFF, 'B': 0x7F, 'C': 0xFF}  # input levels (PB7 radar OUT low = nobody)
         self.pin_fn = {}              # port -> f(cycles) -> byte, overrides pins[]
         self.stuck = {}               # port: (mask, level) read back regardless of LAT
+        # The datasheet contradicts itself on T1DIR: the register table says
+        # 0 = down, the counting-mode section says 0 = up. Run both
+        # (PS10_TIM1_DIR0=down|up); TIM2 and TIM4 only count up.
+        self.tim1_dir0_down = os.environ.get('PS10_TIM1_DIR0', 'down') == 'down'
         self.pin_log = []             # (cycle, port, new LAT value) on every change
         self.lat = {'A': 0, 'B': 0, 'C': 0}
         self.adc = {}                 # channel -> 12-bit value
@@ -111,8 +116,8 @@ class Mcu(Cpu):
                 self.mem[a] &= ~v
                 return
             if a == t.egr:
-                if v & 1:
-                    t.count, t.frac = 0, 0
+                if v & 1:                     # UG: restart from the start of a period
+                    t.count, t.frac = (self.arr_of(t) if self.counts_down(t) else 0), 0
                 return
             if a in t.cnt:
                 if len(t.cnt) == 2:
@@ -126,6 +131,12 @@ class Mcu(Cpu):
         if a == ADCON0 and v & 0x02 and v & 0x01:
             self.adc_done_at = self.cycles + 30
         super().write(a, v)
+
+    def arr_of(self, t):
+        return (self.mem[t.arr[0]] << 8) | self.mem[t.arr[1]] if len(t.arr) == 2 else self.mem[t.arr[0]]
+
+    def counts_down(self, t):
+        return t.name == 'TIM1' and bool(self.mem[t.cr1] & 0x10) != self.tim1_dir0_down
 
     # --- time -----------------------------------------------------------------
     def tick_peripherals(self):
@@ -145,11 +156,20 @@ class Mcu(Cpu):
             t.frac += per
             if t.frac < div:
                 continue
-            t.count += t.frac // div
+            steps = t.frac // div
             t.frac %= div
-            arr = (self.mem[t.arr[0]] << 8) | self.mem[t.arr[1]] if len(t.arr) == 2 else self.mem[t.arr[0]]
-            if t.count > arr:
-                t.count -= arr + 1
+            arr = self.arr_of(t)
+            if self.counts_down(t):           # ARR .. 0, update on underflow, reload ARR
+                t.count -= steps
+                wrapped = t.count < 0
+                if wrapped:
+                    t.count += arr + 1
+            else:                             # 0 .. ARR, update on overflow
+                t.count += steps
+                wrapped = t.count > arr
+                if wrapped:
+                    t.count -= arr + 1
+            if wrapped:
                 self.mem[t.sr] |= 1
                 if cr1 & 0x08:                # one-pulse mode
                     self.mem[t.cr1] &= ~1

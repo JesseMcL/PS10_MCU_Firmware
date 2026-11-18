@@ -62,7 +62,7 @@ contacts is the only filtering. Inputs are reported when they change and on a
 status query (`0x08`). The output and LED start off after a power cut. Nothing
 is written to the data EEPROM except the bootloader hand-over, so the stock
 settings (0x02-0x0F, 0x7F) are still there for a rollback to 1.0.5. Product
-info: `{"p":"ps10open","v":"0.2.2","m":0}`.
+info: `{"p":"ps10open","v":"0.2.3","m":0}`.
 
 ### ESPHome
 
@@ -84,7 +84,8 @@ registers come from `src/ft61e0a5.h`, never from the PIC part's headers.
 
 ```
 python tools/build.py              # build/<name>-<version>.bin + hashes + tuya_mcu_dfu block
-python tools/test_open.py          # run it in the emulator (about 2 minutes)
+python tools/test_open.py          # run it in the emulator (about 2 minutes);
+                                   # PS10_TIM1_DIR0=up|down picks TIM1's count direction (default down)
 ```
 
 **Toolchain:**
@@ -109,15 +110,15 @@ platform would only wrap the same calls.
 
 ## Install and roll back
 
-1. Copy `build/ps10-mcu-0.2.2.bin` next to the device YAML and point
+1. Copy `build/ps10-mcu-0.2.3.bin` next to the device YAML and point
    `tuya_mcu_dfu` at it (the build prints the block):
    ```yaml
    update:
      - platform: tuya_mcu_dfu
        name: MCU firmware
        firmware:
-         path: ps10-mcu-0.2.2.bin
-         version: "0.2.2"
+         path: ps10-mcu-0.2.3.bin
+         version: "0.2.3"
          sha256: <from the build output>
    ```
    Add [`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) as a package, install,
