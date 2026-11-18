@@ -81,6 +81,9 @@ SFR(UR1DLL, 0x494);
 SFR(UR1DLH, 0x495);
 SFR(UR1TC, 0x49C);
 SFR(ODCON0, 0x21F);
+SFR(PSINK0, 0x19A);  /* sink current per pin, 1 = 62 mA, 0 = 48 mA (reset 0) */
+SFR(PSINK1, 0x19B);
+SFR(PSINK2, 0x19C);
 
 /* TIM1 (radar soft-UART transmit bit clock) */
 SFR(TIM1CR1, 0x211);

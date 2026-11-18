@@ -16,7 +16,7 @@
 #
 # MCU datapoints: 1 radar OUT pin (enum 0/1), 110 output, 111 status LED,
 # 112 light (raw 12-bit ADC), 113 switch input, 114 pushbutton, 202 radar bytes,
-# 250 link diagnostics (logged under the ps10_diag tag).
+# 203 radar relay on/off, 250 link diagnostics (logged under the ps10_diag tag).
 
 substitutions:
   tuya_id: tuya_mcu
@@ -36,19 +36,24 @@ tuya:
         - virtual_uart.push:
             id: radar_uart
             data: !lambda return x;
-    # MCU link diagnostics (firmware 0.2.4+), every 2 s. Counters are since
-    # the MCU started; layout in src/main.c (diag_send).
+    # MCU link diagnostics (firmware 0.2.5+, layout 2), every 2 s. Counters
+    # are since the MCU started; layout in src/main.c (diag_send).
     - sensor_datapoint: 250
       datapoint_type: raw
       then:
         - lambda: |-
-            if (x.size() < 32 || x[0] != 1) return;
+            if (x.size() < 82 || x[0] != 2) return;
             auto u16 = [&](int i) { return (unsigned) (x[i] << 8 | x[i + 1]); };
             ESP_LOGI("ps10_diag",
-                     "up %us rx %u frames %u badsum %u long %u partial %u | fe %u pe %u ovr %u brk %u "
-                     "polled %u qfull %u | seen %02X lsr %02X ier %02X state %u lag %ums pcon %02X",
-                     u16(8), u16(10), u16(12), u16(14), u16(16), u16(18), u16(20), u16(22), u16(24), u16(26),
-                     u16(28), u16(30), x[2], x[3], x[4], x[6], x[7], x[1]);
+                     "up %us rx %u frames %u badsum %u long %u partial %u hunted %u | fe %u pe %u ovr %u brk %u "
+                     "polled %u qfull %u | irq/s %u (max %u) loops/s %u (min %u) lag %ums",
+                     u16(8), u16(10), u16(12), u16(14), u16(16), u16(18), u16(32), u16(20), u16(22), u16(24),
+                     u16(26), u16(28), u16(30), u16(34), u16(36), u16(38), u16(40), x[7]);
+            ESP_LOGI("ps10_diag",
+                     "high water: tuya rx %u/127 radar rx %u/127 radar tx %u/255 | radar ovf %u fe %u refused %u "
+                     "blocked %u relay %u | seen %02X lsr %02X ier %02X state %u pcon %02X",
+                     x[42], x[43], x[44], x[45], x[46], x[47], x[48], x[49], x[2], x[3], x[4], x[6], x[1]);
+            ESP_LOGI("ps10_diag", "last rx: %s", format_hex_pretty(&x[50], 32).c_str());
 
 logger:
   logs:
@@ -77,6 +82,29 @@ switch:
       - switch.turn_on: status_led
     on_turn_off:
       - switch.turn_off: status_led
+  # Off: the MCU stops relaying radar bytes (DP 202 writes still go to the
+  # radar). For testing; on again at every MCU start-up.
+  - platform: tuya
+    tuya_id: ${tuya_id}
+    id: radar_relay
+    name: Radar relay
+    entity_category: diagnostic
+    switch_datapoint: 203
+  # Radar configuration mode: the LD2410 stops its 10 Hz reports while in it,
+  # and still answers commands. For testing; ld2410's own commands end it.
+  - platform: template
+    id: radar_config_mode
+    name: Radar config mode
+    entity_category: diagnostic
+    optimistic: true
+    turn_on_action:
+      - uart.write:
+          id: radar_uart
+          data: [0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 0xFF, 0x00, 0x01, 0x00, 0x04, 0x03, 0x02, 0x01]
+    turn_off_action:
+      - uart.write:
+          id: radar_uart
+          data: [0xFD, 0xFC, 0xFB, 0xFA, 0x02, 0x00, 0xFE, 0x00, 0x04, 0x03, 0x02, 0x01]
   - platform: tuya
     tuya_id: ${tuya_id}
     id: status_led

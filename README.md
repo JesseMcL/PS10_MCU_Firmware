@@ -56,14 +56,15 @@ Numbers are the stock firmware's where the function is the same.
 | 113 | bool | ro | switch input (PC0) active (low), 30 ms debounce |
 | 114 | bool | ro | button (PA3) pressed, 30 ms debounce |
 | 202 | raw | rw | radar serial relay, in chunks of any size ([docs/radar-passthrough.md](docs/radar-passthrough.md)) |
-| 250 | raw | ro | link diagnostics every 2 s: reset flags, Tuya UART bytes/frames/errors counters (layout in `src/main.c`, `diag_send`); the package logs it under `ps10_diag` |
+| 203 | bool | rw | radar relay: 1 (start-up) relays radar bytes in DP 202, 0 discards them (DP 202 writes still reach the radar); for testing |
+| 250 | raw | ro | link diagnostics every 2 s: reset flags, Tuya UART counters, interrupt and main-loop rates, queue high-water marks, radar link counters, the last 32 bytes received (layout in `src/main.c`, `diag_send`); the package logs it under `ps10_diag` |
 
 Values are raw: no scaling, averaging or thresholds. The debounce on the two
 contacts is the only filtering. Inputs are reported when they change and on a
 status query (`0x08`). The output and LED start off after a power cut. Nothing
 is written to the data EEPROM except the bootloader hand-over, so the stock
 settings (0x02-0x0F, 0x7F) are still there for a rollback to 1.0.5. Product
-info: `{"p":"ps10open","v":"0.2.4","m":0}`.
+info: `{"p":"ps10open","v":"0.2.5","m":0}`.
 
 ### ESPHome
 
@@ -112,15 +113,15 @@ platform would only wrap the same calls.
 
 ## Install and roll back
 
-1. Copy `build/ps10-mcu-0.2.4.bin` next to the device YAML and point
+1. Copy `build/ps10-mcu-0.2.5.bin` next to the device YAML and point
    `tuya_mcu_dfu` at it (the build prints the block):
    ```yaml
    update:
      - platform: tuya_mcu_dfu
        name: MCU firmware
        firmware:
-         path: ps10-mcu-0.2.4.bin
-         version: "0.2.4"
+         path: ps10-mcu-0.2.5.bin
+         version: "0.2.5"
          sha256: <from the build output>
    ```
    Add [`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) as a package, install,

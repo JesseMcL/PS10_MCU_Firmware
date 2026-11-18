@@ -54,9 +54,12 @@ def diag(cpu, ms=2100):
         return None
     d = reps[-1]
     names = ('uptime', 'rx_bytes', 'frames', 'bad_sum', 'too_long', 'resyncs',
-             'fe', 'pe', 'ovr', 'bk', 'polled', 'qfull')
-    r = dict(zip(names, (d[i] << 8 | d[i + 1] for i in range(8, 32, 2))))
+             'fe', 'pe', 'ovr', 'bk', 'polled', 'qfull', 'hunted', 'isr', 'isr_max', 'loops', 'loops_min')
+    r = dict(zip(names, (d[i] << 8 | d[i + 1] for i in range(8, 42, 2))))
     r.update(layout=d[0], pcon=d[1], errs_seen=d[2], lsr=d[3], ier=d[4], mcr=d[5], state=d[6], lag=d[7], len=len(d))
+    r.update(zip(('urxq_high', 'radar_rxq_high', 'radar_pq_high', 'radar_rx_ovf', 'radar_fe', 'radar_refused',
+                  'radar_blocked', 'relay'), d[42:50]))
+    r['raw'] = bytes(d[50:82])
     return r
 
 
@@ -97,12 +100,12 @@ check(outputs(cpu) == (0, 0) and cpu.pin('B', 3) == 1, 'triac and LED off, radar
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x00', True)], 'first heartbeat -> [00]')
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x01', True)], 'next heartbeat -> [01]')
 r = xfer(cpu, frame(0x01), 60)
-check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.4","m":0}', True)], 'product info %r' % r)
+check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.5","m":0}', True)], 'product info %r' % r)
 check(xfer(cpu, frame(0x02)) == [(3, 2, b'', True)], 'working mode -> empty 0x02')
 check(xfer(cpu, frame(0x03, b'\x04')) == [(3, 3, b'', True)], 'wifi state -> empty 0x03')
 r = dps(xfer(cpu, frame(0x08), 80))
 check(r == {1: (4, b'\x00'), 110: (1, b'\x00'), 111: (1, b'\x00'), 112: (2, (1000).to_bytes(4, 'big')),
-            113: (1, b'\x00'), 114: (1, b'\x00')},
+            113: (1, b'\x00'), 114: (1, b'\x00'), 203: (1, b'\x01')},
       'status query reports every DP: %r' % r)
 
 # --- outputs ----------------------------------------------------------------
@@ -172,6 +175,24 @@ cpu.ms(120)
 chunks = [data[4:] for ver, cmd, data, ok in parse(bytes(cpu.tx))]
 check(b''.join(chunks) == stream and max(map(len, chunks)) <= 48,
       'long burst relayed in chunks of <= 48 (%s)' % [len(c) for c in chunks])
+
+r = dps(xfer(cpu, frame(0x06, dp(203, 1, [0]))))
+check(r == {203: (1, b'\x00')}, 'DP 203 off -> reported back')
+cpu.tx.clear()
+wire.send(ack)
+cpu.ms(35)
+check(parse(bytes(cpu.tx)) == [], 'relay off: radar bytes not sent to ESPHome')
+log0 = len(cpu.pin_log)
+r = xfer(cpu, frame(0x06, dp(202, 0, read_fw)), 40)
+check(r == [(3, 7, dp(202, 0, b''), True)] and decode_uart(cpu.pin_log[log0:], 'B', 3) == read_fw,
+      'relay off: DP 202 writes still reach the radar and are answered')
+cpu.ms(100)                                      # let the pacer time out (no ACK)
+r = dps(xfer(cpu, frame(0x06, dp(203, 1, [1]))))
+check(r == {203: (1, b'\x01')}, 'DP 203 on -> reported back')
+cpu.tx.clear()
+wire.send(ack)
+cpu.ms(35)
+check(b''.join(d[4:] for _, c, d, ok in parse(bytes(cpu.tx))) == ack, 'relay on again: radar bytes relayed')
 
 for cmd in (0xA1, 0xA2):
     log0 = len(cpu.pin_log)
@@ -267,15 +288,18 @@ cpu.uart_stall_on_error = False
 if TEST_DIAG:
     cpu = boot(ee0)
     cpu.ms(5)
-    cpu.tx.clear()
-    cpu.ms(2500)
-    check(not any(is_diag(f) for f in parse_all(bytes(cpu.tx))), 'no DP 250 before the status query')
     sent = 0
     for f in (frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)):
         xfer(cpu, f, 80)
         sent += len(f)
     d = diag(cpu)
-    check(d is not None and d['len'] == 32 and d['layout'] == 1, 'DP 250 every 2 s once online, 32 bytes: %r' % d)
+    check(d is not None and d['len'] == 82 and d['layout'] == 2, 'DP 250 every 2 s once online, 82 bytes: %r' % d)
+    last = b''.join((frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)))
+    check(d and d['raw'] == last[-32:],
+          'DP 250 carries the last 32 bytes received: %s' % (d and d['raw'].hex()))
+    check(d and d['isr'] >= 1000 and d['loops'] > 1000 and d['loops_min'] > 0 and d['relay'] == 1 and d['hunted'] == 0,
+          'interrupts/s %s, main-loop passes/s %s (min %s), nothing skipped hunting for 55 AA'
+          % (d and d['isr'], d and d['loops'], d and d['loops_min']))
     check(d and d['rx_bytes'] == sent and d['frames'] == 5 and d['bad_sum'] == d['resyncs'] == 0,
           'DP 250 counts bytes received and frames accepted')
     check(d and d['ier'] == 0x05 and d['mcr'] == 0x18 and d['state'] == 0, 'receive and receive-error interrupts on, parser idle')
@@ -283,8 +307,10 @@ if TEST_DIAG:
     bad = bytearray(frame(0x00)); bad[-1] ^= 1
     xfer(cpu, bytes(bad))
     xfer(cpu, frame(0x00)[:4], 300)                  # half a frame, then nothing
+    xfer(cpu, b'\x12\x34\x55\x00', 300)              # noise: 3 bytes skipped (and 55 00 counts 2)
     d = diag(cpu)
-    check(d and d['bad_sum'] == 1 and d['resyncs'] == 1, 'bad checksum and dropped partial frame counted: %r' % d)
+    check(d and d['bad_sum'] == 1 and d['resyncs'] == 1 and d['hunted'] == 4,
+          'bad checksum, dropped partial frame and skipped bytes counted: %r' % d)
     cpu.uart_stall_on_error = True                   # a receiver that stops after an error
     cpu.uart_err = 0x18                              # framing error + break
     r = xfer(cpu, frame(0x00))

@@ -36,7 +36,7 @@ static volatile uint8_t rx_foot;    /* footer match progress, received bytes */
 static uint8_t tx_foot;             /* footer match progress, sent bytes */
 static const uint8_t footer[4] = {0x04, 0x03, 0x02, 0x01};
 volatile uint8_t radar_rx_idle_ms = 255;
-uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked, radar_overflows;
+uint8_t radar_rx_overflows, radar_frame_errors, radar_blocked, radar_overflows, radar_pq_high;
 
 #define TX_HIGH() (RTX_PORT |= (1u << RTX_BIT))
 #define TX_LOW()  (RTX_PORT &= (uint8_t)~(1u << RTX_BIT))
@@ -191,6 +191,7 @@ static uint8_t tx_put(uint8_t b)    /* to the pacer */
     if (next == pq_tail) return 0;
     pq[pq_head] = b;
     pq_head = next;
+    if ((uint8_t)(pq_head - pq_tail) > radar_pq_high) radar_pq_high = (uint8_t)(pq_head - pq_tail);
     return 1;
 }
 
