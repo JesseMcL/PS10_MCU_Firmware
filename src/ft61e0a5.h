@@ -15,6 +15,9 @@
 
 /* core */
 SFR(STATUS, 0x003);
+SFR(PCON, 0x096);    /* reset flags: 7 STKOVF 6 STKUNF 5 EMCF 4 IERRF (write 0 to
+                        clear), 3 /MCLRF 2 /SRSTF 1 /PORF 0 /BORF (0 = that reset
+                        happened; write 1 to re-arm) */
 SFR(INTCON, 0x00B);
 #define GIE  0x80
 #define PEIE 0x40
@@ -62,13 +65,17 @@ SFR(EECON2, 0x196);
 /* USART1 (Tuya link; TX PA6, RX PA7 at reset) */
 SFR(UR1DATAL, 0x48C);
 SFR(UR1IER, 0x48E);
-#define UR1_RXNE 0x01
+#define UR1_RXNE 0x01   /* receive interrupt */
+#define UR1_RXSE 0x04   /* receive error interrupt (BKF/FEF/PEF/OVERF) */
 SFR(UR1LCR, 0x48F);
 SFR(UR1MCR, 0x491);
 SFR(UR1LSR, 0x492);
 #define UR1_RXNEF 0x01
-#define UR1_OVERF 0x02
+#define UR1_OVERF 0x02  /* error flags: write 0 to clear (RW0) */
+#define UR1_PEF   0x04
 #define UR1_FEF   0x08
+#define UR1_BKF   0x10
+#define UR1_ERRS  (UR1_OVERF | UR1_PEF | UR1_FEF | UR1_BKF)
 #define UR1_TXEF  0x20
 SFR(UR1DLL, 0x494);
 SFR(UR1DLH, 0x495);

@@ -15,6 +15,7 @@
  *  114  button     bool   ro   button (PA3) pressed, 30 ms debounce
  *  202  radar      raw    rw   bytes to/from the LD2410C, any chunking up to
  *                              128 bytes per write
+ *  250  diagnostics raw   ro   link counters, every 2 s (layout at diag_send)
  *
  * Inputs are reported when they change, and all of them on a status query.
  * The output and LED start off.
@@ -31,7 +32,7 @@
 #include "tuya.h"
 
 #ifndef VERSION
-#define VERSION "0.2.3"
+#define VERSION "0.2.4"
 #endif
 
 BOOTLOADER_RAM;
@@ -46,12 +47,14 @@ enum {
     DP_SWITCH = 113,
     DP_BUTTON = 114,
     DP_RADAR = 202,
+    DP_DIAG = 250,
 };
 
 #define RELAY_CHUNK 48          /* radar bytes per DP 202 report */
 #define RELAY_IDLE_MS 3         /* send a partial chunk after this gap */
 #define LIGHT_PERIOD_MS 1000
 #define DEBOUNCE_MS 30
+#define DIAG_PERIOD_MS 2000
 
 /* --- data EEPROM: only the bootloader hand-over ----------------------------- */
 static uint8_t ee_read(uint8_t a)
@@ -94,6 +97,36 @@ static void enter_bootloader(void)
 #define URXQ 128
 static volatile uint8_t urxq[URXQ], urx_head, urx_tail;
 
+/* receive diagnostics (DP 250) */
+static volatile uint16_t rx_bytes, rx_fe, rx_pe, rx_ovr, rx_bk, rx_polled, rx_qfull;
+static volatile uint8_t rx_errs_seen;      /* every error flag seen, ORed */
+
+/* Take what USART1 has: clear any receive error flag (they're write-0-to-
+ * clear; writing 1 leaves a flag alone), then read the byte if there is one.
+ * A macro, not a function: it runs in the interrupt and, as a backup, in the
+ * main loop with interrupts off, and XC8 would otherwise duplicate it. */
+#define UART_SERVICE() do {                                         \
+        uint8_t lsr_ = UR1LSR;                                      \
+        uint8_t err_ = lsr_ & UR1_ERRS;                             \
+        if (err_) {                                                 \
+            UR1LSR = (uint8_t)~err_;                                \
+            rx_errs_seen |= err_;                                   \
+            if (err_ & UR1_FEF) rx_fe++;                            \
+            if (err_ & UR1_PEF) rx_pe++;                            \
+            if (err_ & UR1_OVERF) rx_ovr++;                         \
+            if (err_ & UR1_BKF) rx_bk++;                            \
+        }                                                           \
+        if (lsr_ & UR1_RXNEF) {                                     \
+            uint8_t b_ = UR1DATAL;                                  \
+            uint8_t next_ = (urx_head + 1) & (URXQ - 1);            \
+            rx_bytes++;                                             \
+            if (next_ != urx_tail) {                                \
+                urxq[urx_head] = b_;                                \
+                urx_head = next_;                                   \
+            } else rx_qfull++;                                      \
+        }                                                           \
+    } while (0)
+
 void uart_tx(uint8_t b)
 {
     while (!(UR1LSR & UR1_TXEF)) clrwdt();
@@ -105,14 +138,7 @@ static volatile uint8_t ticks;  /* 1 ms ticks not yet processed */
 
 void __interrupt() isr(void)
 {
-    if ((UR1IER & UR1_RXNE) && (UR1LSR & UR1_RXNEF)) {
-        uint8_t b = UR1DATAL;
-        uint8_t next = (urx_head + 1) & (URXQ - 1);
-        if (next != urx_tail) {
-            urxq[urx_head] = b;
-            urx_head = next;
-        }
-    }
+    UART_SERVICE();
     radar_isr();
     if (TIM4SR & TIM_U) {
         TIM4SR = TIM_U;
@@ -126,6 +152,10 @@ static uint8_t heartbeat_seen;
 static uint8_t output, led, presence, switch_on, button;
 static uint16_t light, light_reported;
 static uint16_t light_timer;
+static uint16_t diag_timer, uptime_ms, uptime_s;
+static uint8_t reset_flags;     /* PCON at start-up */
+static uint8_t max_backlog;
+static uint8_t rx_waiting;      /* a received byte was waiting at the last 1 ms check */     /* most 1 ms ticks the main loop has fallen behind */
 
 static void set_output(uint8_t on)
 {
@@ -175,6 +205,50 @@ static void relay_send(uint8_t n)
     if (n > have) n = have;
     tuya_report_raw_begin(DP_RADAR, n);
     while (n--) tuya_byte(radar_rx_get());
+    tuya_end();
+}
+
+/* DP 250, raw, 32 bytes:
+ *   0 layout (1)      1 PCON at start-up  2 receive error flags ever seen
+ *   3 UR1LSR now      4 UR1IER now        5 UR1MCR now
+ *   6 Tuya parser state now (0 = idle)    7 longest main-loop lag, ms
+ * then 16-bit big-endian counters since start-up, wrapping:
+ *   8 uptime s        10 bytes received   12 frames accepted
+ *  14 bad checksums   16 frames too long  18 partial frames dropped
+ *  20 framing errors  22 parity errors    24 overruns   26 breaks
+ *  28 bytes the main loop had to fetch (left by the interrupt over 1 ms)
+ *  30 bytes lost to a full receive queue */
+static void put16(uint16_t v)
+{
+    tuya_byte((uint8_t)(v >> 8));
+    tuya_byte((uint8_t)v);
+}
+
+static void diag_send(void)
+{
+    uint16_t c[6];
+    INTCON &= (uint8_t)~GIE;        /* a consistent snapshot of the ISR's counters */
+    c[0] = rx_bytes; c[1] = rx_fe; c[2] = rx_pe; c[3] = rx_ovr; c[4] = rx_bk; c[5] = rx_polled;
+    uint16_t qfull = rx_qfull;
+    uint8_t seen = rx_errs_seen;
+    INTCON |= GIE;
+    tuya_report_raw_begin(DP_DIAG, 32);
+    tuya_byte(1);
+    tuya_byte(reset_flags);
+    tuya_byte(seen);
+    tuya_byte(UR1LSR);
+    tuya_byte(UR1IER);
+    tuya_byte(UR1MCR);
+    tuya_byte(tuya_state());
+    tuya_byte(max_backlog);
+    put16(uptime_s);
+    put16(c[0]);
+    put16(tuya_frames);
+    put16(tuya_bad_sum);
+    put16(tuya_too_long);
+    put16(tuya_resyncs);
+    for (uint8_t i = 1; i < 6; i++) put16(c[i]);
+    put16(qfull);
     tuya_end();
 }
 
@@ -308,14 +382,15 @@ static void hw_init(void)
     WPUB = WPUB_INIT;
     ANSELA = ANSELA_INIT;
 
-    /* USART1: 9600 8N1, as stock; receive interrupt only */
+    /* USART1: 9600 8N1, as stock; receive and receive-error interrupts */
     UR1LCR = 0x01;
     UR1MCR = 0x18;
     UR1DLL = 0x68;
     UR1DLH = 0;
     UR1TC = 0x01;
     ODCON0 |= 0x01;
-    UR1IER = UR1_RXNE;
+    UR1LSR = (uint8_t)~UR1_ERRS;  /* clear anything left from the bootloader */
+    UR1IER = UR1_RXNE | UR1_RXSE;
 
     /* ADC as stock (right-justified) */
     ADCON1 = 0xE4;
@@ -351,6 +426,8 @@ static void boot_escape(void)
 void main(void)
 {
     boot_app_flag |= 0x01;      /* keep the bootloader passing interrupts to us */
+    reset_flags = PCON;
+    PCON = 0x0F;                /* clear the error flags, re-arm the reset ones */
     hw_init();
     INTCON = GIE | PEIE;
     boot_escape();
@@ -370,8 +447,23 @@ void main(void)
             idle = 0;
             if (cmd != 0xFF) handle(cmd, len);
         }
+        if (ticks > max_backlog) max_backlog = ticks;
         while (ticks) {
             ticks--;
+            /* backup, once a ms: an error flag the interrupt hasn't cleared, or
+             * a byte it has left waiting a whole character time. Neither should
+             * happen; rx_polled counts the bytes. */
+            INTCON &= (uint8_t)~GIE;
+            uint8_t lsr = UR1LSR;
+            if ((lsr & UR1_ERRS) || ((lsr & UR1_RXNEF) && rx_waiting)) {
+                if (lsr & UR1_RXNEF) rx_polled++;
+                UART_SERVICE();
+                lsr = 0;
+            }
+            rx_waiting = lsr & UR1_RXNEF;
+            INTCON |= GIE;
+            if (++uptime_ms >= 1000) { uptime_ms = 0; uptime_s++; }
+            if (++diag_timer >= DIAG_PERIOD_MS) { diag_timer = 0; if (online) diag_send(); }
             radar_tick_1ms();
             inputs_1ms();
             if (++idle == 200) tuya_resync();   /* 200 ms gap inside a frame */

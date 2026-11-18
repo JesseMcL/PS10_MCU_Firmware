@@ -28,6 +28,11 @@ extern uint8_t tuya_rx[TUYA_RX_MAX];
 uint8_t tuya_feed(uint8_t b, uint8_t *len);
 /* Drop a partial frame (call after a gap in the byte stream). */
 void tuya_resync(void);
+/* Parser state (0 = waiting for 55) and counters, for diagnostics: frames
+ * accepted, dropped for a bad checksum, dropped as too long, partial frames
+ * dropped by tuya_resync(). */
+uint8_t tuya_state(void);
+extern uint16_t tuya_frames, tuya_bad_sum, tuya_too_long, tuya_resyncs;
 
 /* Sending: tuya_begin(cmd, payload length), the bytes, tuya_end(). */
 void tuya_begin(uint8_t cmd, uint16_t len);

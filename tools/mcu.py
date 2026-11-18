@@ -48,6 +48,11 @@ class Mcu(Cpu):
         self.adc_done_at = None
         self.uart_gap = IPS // 960    # one 10-bit character at 9600 baud
         self.uart_next = 0
+        # USART1 receive error flags (OVERF/PEF/FEF/BKF, write 0 to clear). With
+        # uart_stall_on_error set, no byte is delivered while one is set: the
+        # worst case of what a receiver might do after an error.
+        self.uart_err = 0
+        self.uart_stall_on_error = False
         self.last_pb4 = 1
         self.timers = []
         self.timer16 = [
@@ -89,14 +94,18 @@ class Mcu(Cpu):
         if a in (0x10C, 0x10D, 0x10E):
             return self.lat[ADDR_PORT[a]]
         if a == UR1DATAL:
-            return self.rx.popleft() if self.rx and self.cycles >= self.uart_next and \
-                self._take_uart() else 0
+            return self.rx.popleft() if self._rx_ready() and self._take_uart() else 0
         if a == UR1LSR:
-            return (1 if self.rx and self.cycles >= self.uart_next else 0) | 0x20
+            return (1 if self._rx_ready() else 0) | 0x20 | self.uart_err
         t = self.by_addr.get(a)
         if t is not None and a in t.cnt:
             return (t.count >> 8) & 0xFF if (len(t.cnt) == 2 and a == t.cnt[0]) else t.count & 0xFF
         return super().read(a)
+
+    def _rx_ready(self):
+        if self.uart_err and self.uart_stall_on_error:
+            return False
+        return bool(self.rx) and self.cycles >= self.uart_next
 
     def _take_uart(self):
         self.uart_next = self.cycles + self.uart_gap
@@ -127,6 +136,9 @@ class Mcu(Cpu):
                 return
         if a == EPIF0:
             self.mem[a] &= ~v
+            return
+        if a == UR1LSR:
+            self.uart_err &= v                # error flags: write 0 to clear
             return
         if a == ADCON0 and v & 0x02 and v & 0x01:
             self.adc_done_at = self.cycles + 30
@@ -194,7 +206,9 @@ class Mcu(Cpu):
             return False
         if not ic & 0x40:
             return False
-        if self.rx and self.cycles >= self.uart_next and self.mem[UR1IER] & 1:
+        if self._rx_ready() and self.mem[UR1IER] & 1:
+            return True
+        if self.uart_err and self.mem[UR1IER] & 4:      # RXSE
             return True
         if self.mem[EPIE0] & self.mem[EPIF0]:
             return True

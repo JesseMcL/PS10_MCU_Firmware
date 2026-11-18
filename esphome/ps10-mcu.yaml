@@ -15,7 +15,8 @@
 # button does, what the LED shows) is ordinary ESPHome config: change it here.
 #
 # MCU datapoints: 1 radar OUT pin (enum 0/1), 110 output, 111 status LED,
-# 112 light (raw 12-bit ADC), 113 switch input, 114 pushbutton, 202 radar bytes.
+# 112 light (raw 12-bit ADC), 113 switch input, 114 pushbutton, 202 radar bytes,
+# 250 link diagnostics (logged under the ps10_diag tag).
 
 substitutions:
   tuya_id: tuya_mcu
@@ -35,6 +36,19 @@ tuya:
         - virtual_uart.push:
             id: radar_uart
             data: !lambda return x;
+    # MCU link diagnostics (firmware 0.2.4+), every 2 s. Counters are since
+    # the MCU started; layout in src/main.c (diag_send).
+    - sensor_datapoint: 250
+      datapoint_type: raw
+      then:
+        - lambda: |-
+            if (x.size() < 32 || x[0] != 1) return;
+            auto u16 = [&](int i) { return (unsigned) (x[i] << 8 | x[i + 1]); };
+            ESP_LOGI("ps10_diag",
+                     "up %us rx %u frames %u badsum %u long %u partial %u | fe %u pe %u ovr %u brk %u "
+                     "polled %u qfull %u | seen %02X lsr %02X ier %02X state %u lag %ums pcon %02X",
+                     u16(8), u16(10), u16(12), u16(14), u16(16), u16(18), u16(20), u16(22), u16(24), u16(26),
+                     u16(28), u16(30), x[2], x[3], x[4], x[6], x[7], x[1]);
 
 logger:
   logs:

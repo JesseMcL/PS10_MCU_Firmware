@@ -5,7 +5,7 @@ inputs and the LDR simulated.  python tools/test_open.py [image.bin]"""
 import glob, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fmd
-from emu import frame, parse, Reset
+from emu import frame, parse as parse_all, Reset
 from mcu import Mcu, SoftUartWire, decode_uart
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,6 +27,30 @@ def boot(ee=None, pins=None):
     for (port, bit), lvl in (pins or {}).items():
         cpu.set_pin(port, bit, lvl)
     return cpu
+
+
+def is_diag(f):
+    return f[1] == 7 and f[2][:1] == bytes([250])
+
+
+def parse(raw):
+    """Frames from the MCU, without the DP 250 diagnostics it sends every 2 s."""
+    return [f for f in parse_all(raw) if not is_diag(f)]
+
+
+def diag(cpu, ms=2100):
+    """Wait for the next DP 250 report and decode it."""
+    cpu.tx.clear()
+    cpu.ms(ms)
+    reps = [f[2][4:] for f in parse_all(bytes(cpu.tx)) if is_diag(f) and f[3]]
+    if not reps:
+        return None
+    d = reps[-1]
+    names = ('uptime', 'rx_bytes', 'frames', 'bad_sum', 'too_long', 'resyncs',
+             'fe', 'pe', 'ovr', 'bk', 'polled', 'qfull')
+    r = dict(zip(names, (d[i] << 8 | d[i + 1] for i in range(8, 32, 2))))
+    r.update(layout=d[0], pcon=d[1], errs_seen=d[2], lsr=d[3], ier=d[4], mcr=d[5], state=d[6], lag=d[7], len=len(d))
+    return r
 
 
 def xfer(cpu, raw, ms=30):
@@ -66,7 +90,7 @@ check(outputs(cpu) == (0, 0) and cpu.pin('B', 3) == 1, 'triac and LED off, radar
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x00', True)], 'first heartbeat -> [00]')
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x01', True)], 'next heartbeat -> [01]')
 r = xfer(cpu, frame(0x01), 60)
-check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.3","m":0}', True)], 'product info %r' % r)
+check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.4","m":0}', True)], 'product info %r' % r)
 check(xfer(cpu, frame(0x02)) == [(3, 2, b'', True)], 'working mode -> empty 0x02')
 check(xfer(cpu, frame(0x03, b'\x04')) == [(3, 3, b'', True)], 'wifi state -> empty 0x03')
 r = dps(xfer(cpu, frame(0x08), 80))
@@ -216,6 +240,39 @@ check(all(f in burst for f in frames), 'only whole commands reach the radar')
 check(all(n[:6] == bytes.fromhex('FDFCFBFA0400') and n[7:] == bytes.fromhex('01010004030201') for n in naks) and naks,
       'the rest refused with failure ACKs (%d sent, %d refused)' % (len(frames), len(naks)))
 check(len(frames) + len(naks) == 30, 'every command either sent or refused')
+
+# --- receive diagnostics (DP 250) and error recovery --------------------------
+cpu = boot(ee0)
+cpu.ms(5)
+cpu.tx.clear()
+cpu.ms(2500)
+check(not any(is_diag(f) for f in parse_all(bytes(cpu.tx))), 'no DP 250 before the status query')
+sent = 0
+for f in (frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)):
+    xfer(cpu, f, 80)
+    sent += len(f)
+d = diag(cpu)
+check(d is not None and d['len'] == 32 and d['layout'] == 1, 'DP 250 every 2 s once online, 32 bytes: %r' % d)
+check(d and d['rx_bytes'] == sent and d['frames'] == 5 and d['bad_sum'] == d['resyncs'] == 0,
+      'DP 250 counts bytes received and frames accepted')
+check(d and d['ier'] == 0x05 and d['mcr'] == 0x18 and d['state'] == 0, 'receive and receive-error interrupts on, parser idle')
+check(d and d['polled'] == 0 and d['lag'] < 60, 'every byte taken by the interrupt; main loop lag %s ms' % (d and d['lag']))
+bad = bytearray(frame(0x00)); bad[-1] ^= 1
+xfer(cpu, bytes(bad))
+xfer(cpu, frame(0x00)[:4], 300)                  # half a frame, then nothing
+d = diag(cpu)
+check(d and d['bad_sum'] == 1 and d['resyncs'] == 1, 'bad checksum and dropped partial frame counted: %r' % d)
+cpu.uart_stall_on_error = True                   # a receiver that stops after an error
+cpu.uart_err = 0x18                              # framing error + break
+r = xfer(cpu, frame(0x00))
+check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'framing/break error cleared at once: heartbeat still answered')
+cpu.mem[0x48E] &= ~0x04                          # receive-error interrupt lost: the main loop's check
+cpu.uart_err = 0x02
+r = xfer(cpu, frame(0x00))
+check(r == [(3, 0, b'\x01', True)], 'overrun cleared by the main loop too')
+d = diag(cpu)
+check(d and d['fe'] == 1 and d['bk'] == 1 and d['ovr'] == 1 and d['errs_seen'] == 0x1A,
+      'error flags counted: %r' % d)
 
 # --- update hand-over --------------------------------------------------------
 check(cpu.ee == ee0, 'EEPROM never written in normal running')
