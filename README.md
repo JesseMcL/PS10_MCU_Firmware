@@ -50,8 +50,8 @@ Numbers are the stock firmware's where the function is the same.
 | DP | Type | | |
 |---|---|---|---|
 | 1 | enum | ro | radar OUT pin (PB7): 0 none, 1 presence |
-| 110 | bool | rw | output (triac, PA2) |
-| 111 | bool | rw | status LED (PB6). Stock: "LED follows the output"; here the LED itself |
+| 110 | bool | rw | output (triac, PA2), reported as read back from the pin |
+| 111 | bool | rw | status LED (PB6), reported as read back from the pin. Stock: "LED follows the output"; here the LED itself |
 | 112 | value | ro | light: LDR (PA4/AN2), raw 12-bit ADC, sampled every second, sent when it changes |
 | 113 | bool | ro | switch input (PC0) active (low), 30 ms debounce |
 | 114 | bool | ro | button (PA3) pressed, 30 ms debounce |
@@ -62,7 +62,7 @@ contacts is the only filtering. Inputs are reported when they change and on a
 status query (`0x08`). The output and LED start off after a power cut. Nothing
 is written to the data EEPROM except the bootloader hand-over, so the stock
 settings (0x02-0x0F, 0x7F) are still there for a rollback to 1.0.5. Product
-info: `{"p":"ps10open","v":"0.2.1","m":0}`.
+info: `{"p":"ps10open","v":"0.2.2","m":0}`.
 
 ### ESPHome
 
@@ -109,15 +109,15 @@ platform would only wrap the same calls.
 
 ## Install and roll back
 
-1. Copy `build/ps10-mcu-0.2.1.bin` next to the device YAML and point
+1. Copy `build/ps10-mcu-0.2.2.bin` next to the device YAML and point
    `tuya_mcu_dfu` at it (the build prints the block):
    ```yaml
    update:
      - platform: tuya_mcu_dfu
        name: MCU firmware
        firmware:
-         path: ps10-mcu-0.2.1.bin
-         version: "0.2.1"
+         path: ps10-mcu-0.2.2.bin
+         version: "0.2.2"
          sha256: <from the build output>
    ```
    Add [`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) as a package, install,

@@ -8,8 +8,8 @@
  *
  * Datapoints (numbers as the stock firmware where the function is the same):
  *    1  presence   enum   ro   radar OUT pin: 0 none, 1 presence
- *  110  output     bool   rw   triac
- *  111  status LED bool   rw   LED (stock: LED follows the output when on)
+ *  110  output     bool   rw   triac, reported as read back from the pin
+ *  111  status LED bool   rw   LED, read back likewise (stock: LED follows the output)
  *  112  light      value  ro   LDR, raw 12-bit ADC, sampled every second
  *  113  switch     bool   ro   switch input (PC0) active, 30 ms debounce
  *  114  button     bool   ro   button (PA3) pressed, 30 ms debounce
@@ -31,7 +31,7 @@
 #include "tuya.h"
 
 #ifndef VERSION
-#define VERSION "0.2.1"
+#define VERSION "0.2.2"
 #endif
 
 BOOTLOADER_RAM;
@@ -134,6 +134,11 @@ static void set_output(uint8_t on)
     else OUT_PORT &= (uint8_t)~(1u << OUT_BIT);
 }
 
+/* DP 110/111 report the pin as read back (PORTx reads the pin itself), not
+ * the value asked for: if the pin isn't driven, ESPHome sees it. */
+static uint8_t output_pin(void) { return (OUT_PORT >> OUT_BIT) & 1; }
+static uint8_t led_pin(void) { return (LED_PORT >> LED_BIT) & 1; }
+
 static void set_led(uint8_t on)
 {
     led = on ? 1 : 0;
@@ -155,8 +160,8 @@ static uint16_t adc_read(uint8_t channel)
 static void report_all(void)
 {
     tuya_report_enum(DP_PRESENCE, presence);
-    tuya_report_bool(DP_OUTPUT, output);
-    tuya_report_bool(DP_LED, led);
+    tuya_report_bool(DP_OUTPUT, output_pin());
+    tuya_report_bool(DP_LED, led_pin());
     tuya_report_value(DP_LIGHT, light);
     tuya_report_bool(DP_SWITCH, switch_on);
     tuya_report_bool(DP_BUTTON, button);
@@ -184,11 +189,13 @@ static void dp_deliver(uint8_t len)
         switch (dp) {
         case DP_OUTPUT:
             set_output(v[0]);
-            tuya_report_bool(DP_OUTPUT, output);
+            nop();                     /* let the pin settle before reading it */
+            tuya_report_bool(DP_OUTPUT, output_pin());
             break;
         case DP_LED:
             set_led(v[0]);
-            tuya_report_bool(DP_LED, led);
+            nop();
+            tuya_report_bool(DP_LED, led_pin());
             break;
         case DP_RADAR:
             if (type == DP_RAW)

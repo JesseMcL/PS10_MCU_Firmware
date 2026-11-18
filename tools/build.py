@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tools'))
 import fmd  # noqa: E402
 
 NAME = 'ps10-mcu'                      # image name
-DEFAULT_VERSION = '0.2.1'
+DEFAULT_VERSION = '0.2.2'
 SOURCES = ['src/main.c', 'src/radar.c', 'src/tuya.c']
 
 CPU = '16F18346'

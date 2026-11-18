@@ -66,7 +66,7 @@ check(outputs(cpu) == (0, 0) and cpu.pin('B', 3) == 1, 'triac and LED off, radar
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x00', True)], 'first heartbeat -> [00]')
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x01', True)], 'next heartbeat -> [01]')
 r = xfer(cpu, frame(0x01), 60)
-check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.1","m":0}', True)], 'product info %r' % r)
+check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.2","m":0}', True)], 'product info %r' % r)
 check(xfer(cpu, frame(0x02)) == [(3, 2, b'', True)], 'working mode -> empty 0x02')
 check(xfer(cpu, frame(0x03, b'\x04')) == [(3, 3, b'', True)], 'wifi state -> empty 0x03')
 r = dps(xfer(cpu, frame(0x08), 80))
@@ -83,6 +83,13 @@ dps(xfer(cpu, frame(0x06, dp(110, 1, [0]))))
 check(outputs(cpu) == (0, 1), 'DP 110 off -> triac off, LED stays on')
 dps(xfer(cpu, frame(0x06, dp(111, 1, [0]))))
 check(outputs(cpu) == (0, 0), 'DP 111 off -> LED off')
+cpu.stuck['B'] = (0x40, 0x00)                # PB6 not following its latch
+r = dps(xfer(cpu, frame(0x06, dp(111, 1, [1]))))
+check(r == {111: (1, b'\x00')}, 'DP 111 reports the pin as read back: LED pin stuck low -> 0')
+r = dps(xfer(cpu, frame(0x08), 80))
+check(r[111] == (1, b'\x00') and r[110] == (1, b'\x00'), 'status query reads the pins too')
+del cpu.stuck['B']
+dps(xfer(cpu, frame(0x06, dp(111, 1, [0]))))
 r = xfer(cpu, frame(0x06, dp(150, 1, [1])))
 check(r == [(3, 7, dp(150, 1, [1]), True)], 'unknown DP echoed back')
 

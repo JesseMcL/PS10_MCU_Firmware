@@ -36,6 +36,7 @@ class Mcu(Cpu):
         self.mem[0x020] = 0x01        # set by the bootloader before it starts the application
         self.pins = {'A': 0xFF, 'B': 0x7F, 'C': 0xFF}  # input levels (PB7 radar OUT low = nobody)
         self.pin_fn = {}              # port -> f(cycles) -> byte, overrides pins[]
+        self.stuck = {}               # port: (mask, level) read back regardless of LAT
         self.pin_log = []             # (cycle, port, new LAT value) on every change
         self.lat = {'A': 0, 'B': 0, 'C': 0}
         self.adc = {}                 # channel -> 12-bit value
@@ -77,7 +78,9 @@ class Mcu(Cpu):
         if a in (0x00C, 0x00D, 0x00E):
             port = ADDR_PORT[a]
             tris = self.mem[TRIS[port]]
-            return (self.input_level(port) & tris) | (self.lat[port] & ~tris & 0xFF)
+            v = (self.input_level(port) & tris) | (self.lat[port] & ~tris & 0xFF)
+            mask, level = self.stuck.get(port, (0, 0))     # outputs that don't follow LAT
+            return (v & ~mask) | (level & mask)
         if a in (0x10C, 0x10D, 0x10E):
             return self.lat[ADDR_PORT[a]]
         if a == UR1DATAL:
