@@ -40,9 +40,38 @@ tuya:
     - sensor_datapoint: 202
       datapoint_type: raw
       then:
-        - virtual_uart.push:
-            id: radar_uart
-            data: !lambda return x;
+        # LD2410 frames have no checksum: ld2410 only checks their ends, so a
+        # frame with bytes missing in the middle (a Tuya frame lost on the way,
+        # for one) is read as wild distances and energies. Pass on only whole
+        # frames whose length field matches; drop the rest.
+        - lambda: |-
+            static std::vector<uint8_t> buf;
+            static uint32_t dropped;
+            static const uint8_t DATA_HEAD[4] = {0xF4, 0xF3, 0xF2, 0xF1}, DATA_FOOT[4] = {0xF8, 0xF7, 0xF6, 0xF5};
+            static const uint8_t CMD_HEAD[4] = {0xFD, 0xFC, 0xFB, 0xFA}, CMD_FOOT[4] = {0x04, 0x03, 0x02, 0x01};
+            buf.insert(buf.end(), x.begin(), x.end());
+            size_t pos = 0, skipped = 0;
+            while (buf.size() - pos >= 4) {
+              const uint8_t *p = buf.data() + pos;
+              const uint8_t *foot = !memcmp(p, DATA_HEAD, 4) ? DATA_FOOT : !memcmp(p, CMD_HEAD, 4) ? CMD_FOOT : nullptr;
+              if (foot == nullptr) { pos++; skipped++; continue; }
+              if (buf.size() - pos < 6) break;
+              size_t len = p[4] | p[5] << 8;
+              if (len <= 64 && buf.size() - pos < 10 + len) break;
+              if (len <= 64 && !memcmp(p + 6 + len, foot, 4)) {
+                id(radar_uart).push(p, 10 + len);
+                pos += 10 + len;
+              } else {
+                pos++;
+                skipped++;
+              }
+            }
+            buf.erase(buf.begin(), buf.begin() + pos);
+            if (buf.size() > 512) { skipped += buf.size(); buf.clear(); }
+            if (skipped) {
+              dropped += skipped;
+              ESP_LOGW("ps10", "radar: dropped %u bytes of broken frames (%u in total)", (unsigned) skipped, (unsigned) dropped);
+            }
 
 logger:
   logs:
@@ -186,6 +215,9 @@ sensor:
 number:
   - platform: ld2410
     ld2410_id: radar
+    timeout: { id: radar_timeout, internal: true }
+    max_move_distance_gate: { id: radar_max_move_gate, internal: true }
+    max_still_distance_gate: { id: radar_max_still_gate, internal: true }
     g0:
       move_threshold: { id: tm0, internal: true }
       still_threshold: { id: ts0, internal: true }
@@ -213,6 +245,42 @@ number:
     g8:
       move_threshold: { id: tm8, internal: true }
       still_threshold: { id: ts8, internal: true }
+  # Detection range, in cm: the farthest gate that counts for moving and
+  # for still targets (gates are 75 cm at the radar's default resolution).
+  - platform: template
+    id: radar_moving_range
+    name: Moving range
+    entity_category: config
+    unit_of_measurement: cm
+    mode: slider
+    min_value: 150
+    max_value: 600
+    step: 75
+    update_interval: 2s
+    lambda: |-
+      if (!id(radar_max_move_gate).has_state()) return {};
+      return id(radar_max_move_gate).state * 75;
+    set_action:
+      - lambda: |-
+          id(radar_max_move_gate).publish_state(std::clamp<long>(std::lround(x / 75), 2, 8));
+          id(radar).set_max_distances_timeout();   // also reads them back
+  - platform: template
+    id: radar_still_range
+    name: Still range
+    entity_category: config
+    unit_of_measurement: cm
+    mode: slider
+    min_value: 150
+    max_value: 600
+    step: 75
+    update_interval: 2s
+    lambda: |-
+      if (!id(radar_max_still_gate).has_state()) return {};
+      return id(radar_max_still_gate).state * 75;
+    set_action:
+      - lambda: |-
+          id(radar_max_still_gate).publish_state(std::clamp<long>(std::lround(x / 75), 2, 8));
+          id(radar).set_max_distances_timeout();
 
 text_sensor:
   - platform: ld2410
@@ -289,8 +357,9 @@ interval:
           sensor::Sensor *gm[9] = {id(gm0), id(gm1), id(gm2), id(gm3), id(gm4), id(gm5), id(gm6), id(gm7), id(gm8)}, *gs[9] = {id(gs0), id(gs1), id(gs2), id(gs3), id(gs4), id(gs5), id(gs6), id(gs7), id(gs8)};
           if (id(radar_cal_active))
             for (int i = 0; i < 9; i++) {
-              if (!std::isnan(gm[i]->get_raw_state())) id(radar_cal_peak)[i] = std::max(id(radar_cal_peak)[i], (int) gm[i]->get_raw_state());
-              if (!std::isnan(gs[i]->get_raw_state())) id(radar_cal_peak)[9 + i] = std::max(id(radar_cal_peak)[9 + i], (int) gs[i]->get_raw_state());
+              float vm = gm[i]->get_raw_state(), vs = gs[i]->get_raw_state();
+              if (vm <= 100) id(radar_cal_peak)[i] = std::max(id(radar_cal_peak)[i], (int) vm);   // false for NaN
+              if (vs <= 100) id(radar_cal_peak)[9 + i] = std::max(id(radar_cal_peak)[9 + i], (int) vs);
             }
           n = (n + 1) % 20;
           auto list = [](sensor::Sensor *const *v, std::string &out) {
@@ -312,7 +381,9 @@ interval:
               m += (i ? "," : "") + (tm[i]->has_state() ? std::to_string((int) tm[i]->state) : std::string("-"));
               s += (i ? "," : "") + (ts[i]->has_state() ? std::to_string((int) ts[i]->state) : std::string("-"));
             }
-            ESP_LOGI("ps10_gates", "T m=%s s=%s", m.c_str(), s.c_str());
+            auto num = [](number::Number *n) { return n->has_state() ? (int) n->state : -1; };
+            ESP_LOGI("ps10_gates", "T m=%s s=%s r=%d,%d,%d", m.c_str(), s.c_str(), num(id(radar_max_move_gate)),
+                     num(id(radar_max_still_gate)), num(id(radar_timeout)));
           }
 
 # Calibration: engineering mode on, wait `start_delay` s (leave the room),
@@ -360,7 +431,8 @@ script:
 
 # --- radar configuration, as Home Assistant actions ---------------------------------
 # esphome.<device>_radar_set_gate: one gate (0-8), or all gates with gate 255
-# esphome.<device>_radar_set_range: max moving/still gate (2-8), timeout (s)
+# esphome.<device>_radar_set_range: max moving/still gate (2-8), timeout (s);
+#   the Moving range / Still range sliders set the same gates in cm
 # esphome.<device>_radar_calibrate: start delay (s), duration (s), margin
 # esphome.<device>_radar_bluetooth_password: 6 ASCII characters
 # Each command is wrapped in enable/end configuration; the MCU sends them to
@@ -386,22 +458,11 @@ api:
     - action: radar_set_range
       variables: { max_moving_gate: int, max_still_gate: int, timeout: int }
       then:
-        - uart.write:
-            id: radar_uart
-            data: !lambda |-
-              auto le32 = [](std::vector<uint8_t> &v, uint16_t word, uint32_t value) {
-                v.insert(v.end(), {uint8_t(word), uint8_t(word >> 8), uint8_t(value), uint8_t(value >> 8),
-                                   uint8_t(value >> 16), uint8_t(value >> 24)});
-              };
-              std::vector<uint8_t> v = {0xFD, 0xFC, 0xFB, 0xFA, 0x04, 0x00, 0xFF, 0x00, 0x01, 0x00, 0x04, 0x03, 0x02, 0x01,
-                                        0xFD, 0xFC, 0xFB, 0xFA, 0x14, 0x00, 0x60, 0x00};
-              le32(v, 0, std::clamp<int32_t>(max_moving_gate, 2, 8));
-              le32(v, 1, std::clamp<int32_t>(max_still_gate, 2, 8));
-              le32(v, 2, std::clamp<int32_t>(timeout, 0, 65535));
-              v.insert(v.end(), {0x04, 0x03, 0x02, 0x01, 0xFD, 0xFC, 0xFB, 0xFA, 0x02, 0x00, 0xFE, 0x00, 0x04, 0x03, 0x02, 0x01});
-              return v;
-        - delay: 1s
-        - lambda: id(radar).read_all_info();
+        - lambda: |-
+            id(radar_max_move_gate).publish_state(std::clamp<int32_t>(max_moving_gate, 2, 8));
+            id(radar_max_still_gate).publish_state(std::clamp<int32_t>(max_still_gate, 2, 8));
+            id(radar_timeout).publish_state(std::clamp<int32_t>(timeout, 0, 65535));
+            id(radar).set_max_distances_timeout();   // also reads them back
     - action: radar_calibrate
       variables: { start_delay: int, seconds: int, margin: int }
       then:

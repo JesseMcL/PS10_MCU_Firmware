@@ -4,11 +4,12 @@
 // It reads the device log over the page's event stream: in engineering mode
 // ps10-mcu.yaml logs, under the ps10_gates tag,
 //   E m=<9 moving energies> s=<9 still energies>   5 times a second
-//   T m=<9 moving thresholds> s=<9 still thresholds>   every 2 s
+//   T m=<9 moving thresholds> s=<9 still thresholds> r=<max moving gate>,<max still gate>,<hold s>   every 2 s
 //   C <calibration progress>
 // Nothing here goes to Home Assistant. Bars are the current energy, the thin
 // tick above each bar its peak since "Reset peaks", the line across each bar
-// its threshold: a gate detects when its bar crosses its line.
+// its threshold: a gate detects when its bar crosses its line. Gates beyond
+// the moving or still range are faded: the radar ignores them for that kind.
 (() => {
   const GATES = 9;
   const GATE_M = 0.75;   // metres per gate at the default resolution
@@ -18,7 +19,7 @@
   const st = {
     m: Array(GATES).fill(null), s: Array(GATES).fill(null),
     pm: Array(GATES).fill(0), ps: Array(GATES).fill(0),
-    tm: Array(GATES).fill(null), ts: Array(GATES).fill(null),
+    tm: Array(GATES).fill(null), ts: Array(GATES).fill(null), range: null,
     last: 0, cal: [],
   };
 
@@ -49,10 +50,12 @@
       <span class="status"></span>
     </div>
     <canvas></canvas>
+    <div class="bar range"></div>
     <pre></pre>`;
   const canvas = box.querySelector('canvas');
   const status = box.querySelector('.status');
   const calLog = box.querySelector('pre');
+  const rangeText = box.querySelector('.range');
   box.querySelector('button').onclick = () => { st.pm.fill(0); st.ps.fill(0); dirty = true; };
 
   const list = (text, key) => {
@@ -69,10 +72,16 @@
       const mv = list(text, 'm'), sv = list(text, 's');
       if (!mv || !sv) return;
       st.m = mv; st.s = sv; st.last = Date.now();
-      mv.forEach((v, i) => { if (v != null) st.pm[i] = Math.max(st.pm[i], v); });
-      sv.forEach((v, i) => { if (v != null) st.ps[i] = Math.max(st.ps[i], v); });
+      mv.forEach((v, i) => { if (v != null && v <= 100) st.pm[i] = Math.max(st.pm[i], v); });
+      sv.forEach((v, i) => { if (v != null && v <= 100) st.ps[i] = Math.max(st.ps[i], v); });
     } else if (kind === 'T') {
       st.tm = list(text, 'm') || st.tm; st.ts = list(text, 's') || st.ts;
+      const r = list(text, 'r');
+      if (r && r[0] >= 0 && r[1] >= 0) {
+        st.range = r;
+        rangeText.textContent = `Moving range ${(r[0] * GATE_M).toFixed(2)} m (g${r[0]}), still range ${(r[1] * GATE_M).toFixed(2)} m (g${r[1]})` +
+          (r[2] >= 0 ? `, hold ${r[2]} s after the last detection` : '');
+      }
     } else {
       st.cal.push(new Date().toLocaleTimeString() + '  ' + text);
       st.cal = st.cal.slice(-6);
@@ -110,8 +119,9 @@
     g.textAlign = 'center'; g.textBaseline = 'top';
     for (let i = 0; i < GATES; i++) {
       const cx = L + gw * i + gw / 2;
-      [['move', st.m[i], st.pm[i], st.tm[i], cx - bw - gap / 2],
-       ['still', st.s[i], st.ps[i], st.ts[i], cx + gap / 2]].forEach(([c, v, peak, th, x]) => {
+      [['move', st.m[i], st.pm[i], st.tm[i], cx - bw - gap / 2, st.range && i > st.range[0]],
+       ['still', st.s[i], st.ps[i], st.ts[i], cx + gap / 2, st.range && i > st.range[1]]].forEach(([c, v, peak, th, x, out]) => {
+        g.globalAlpha = out ? 0.2 : 1;
         if (live && v != null) {
           g.fillStyle = col(c);
           g.fillRect(x, y(v), bw, y(0) - y(v));
@@ -124,6 +134,7 @@
           g.fillStyle = col('th');
           g.fillRect(x - 2, Math.round(y(th)) - 1, bw + 4, 2);
         }
+        g.globalAlpha = 1;
       });
       g.fillStyle = col('fg'); g.fillText('g' + i, cx, T + ph + 6);
       g.fillStyle = col('dim'); g.fillText((i * GATE_M).toFixed(2) + ' m', cx, T + ph + 20);

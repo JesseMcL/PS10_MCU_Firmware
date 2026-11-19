@@ -86,6 +86,12 @@ Radar tuning lives on the device's own web page, not in Home Assistant:
   delay, duration and margin) turns engineering mode on, waits for you to
   leave the room (10 s from the button), records each gate's highest energy
   for 30 s, then sets every threshold to that peak + 10 and reads them back.
+- **Moving range** and **Still range** (sliders, 150–600 cm in 75 cm gates)
+  set the farthest gate that counts for each kind of target; the chart fades
+  the gates beyond them.
+- LD2410 frames have no checksum, so the package passes ld2410 only whole
+  frames whose length field matches, and logs a warning for anything it
+  drops.
 - The gate energies and thresholds are internal: none of them reach Home
   Assistant. The switch and button are config entities, disabled there by
   default.
