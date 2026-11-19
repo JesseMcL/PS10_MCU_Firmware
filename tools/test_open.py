@@ -5,7 +5,7 @@ inputs and the LDR simulated.  python tools/test_open.py [image.bin]"""
 import glob, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fmd
-from emu import frame, parse as parse_all, Reset
+from emu import frame, parse, Reset
 from mcu import Mcu, SoftUartWire, decode_uart
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,12 +14,15 @@ words = [fmd.fmd_to_pic(w) for w in fmd.load_words(img)]
 flash = [0x3FFF] * 0x600 + words[0x600:]     # the bootloader's stub is modelled in mcu.py
 fails = 0
 
-# Slow sections, off by default (a simulated second takes ~20 s here):
-#   PS10_TEST_LIGHT=1  light sensor report (1 s)
-#   PS10_TEST_DIAG=1   DP 250 diagnostics (~9 s). Update and re-enable these
-#                      whenever what the firmware reports in DP 250 changes.
-TEST_LIGHT = os.environ.get('PS10_TEST_LIGHT') == '1'
-TEST_DIAG = os.environ.get('PS10_TEST_DIAG') == '1'
+# Slow, low-value checks run only with PS10_TEST_ALL=1 (CI sets it): a
+# simulated second takes ~20 s here. They cover code that rarely changes:
+# the light sensor report, ld2410's seven-command set-up paced end to end,
+# a full radar queue refusing commands, and the button escape at power-up.
+TEST_ALL = os.environ.get('PS10_TEST_ALL') == '1'
+
+
+def skip(what):
+    print('skip ' + what + ' (PS10_TEST_ALL=1)')
 
 
 def check(cond, what):
@@ -34,33 +37,6 @@ def boot(ee=None, pins=None):
     for (port, bit), lvl in (pins or {}).items():
         cpu.set_pin(port, bit, lvl)
     return cpu
-
-
-def is_diag(f):
-    return f[1] == 7 and f[2][:1] == bytes([250])
-
-
-def parse(raw):
-    """Frames from the MCU, without the DP 250 diagnostics it sends every 2 s."""
-    return [f for f in parse_all(raw) if not is_diag(f)]
-
-
-def diag(cpu, ms=2100):
-    """Wait for the next DP 250 report and decode it."""
-    cpu.tx.clear()
-    cpu.ms(ms)
-    reps = [f[2][4:] for f in parse_all(bytes(cpu.tx)) if is_diag(f) and f[3]]
-    if not reps:
-        return None
-    d = reps[-1]
-    names = ('uptime', 'rx_bytes', 'frames', 'bad_sum', 'too_long', 'resyncs',
-             'fe', 'pe', 'ovr', 'bk', 'polled', 'qfull', 'hunted', 'isr', 'isr_max', 'loops', 'loops_min')
-    r = dict(zip(names, (d[i] << 8 | d[i + 1] for i in range(8, 42, 2))))
-    r.update(layout=d[0], pcon=d[1], errs_seen=d[2], lsr=d[3], ier=d[4], mcr=d[5], state=d[6], lag=d[7], len=len(d))
-    r.update(zip(('urxq_high', 'radar_rxq_high', 'radar_pq_high', 'radar_rx_ovf', 'radar_fe', 'radar_refused',
-                  'radar_blocked', 'relay'), d[42:50]))
-    r['raw'] = bytes(d[50:82])
-    return r
 
 
 def xfer(cpu, raw, ms=30):
@@ -100,12 +76,12 @@ check(outputs(cpu) == (0, 0) and cpu.pin('B', 3) == 1, 'triac and LED off, radar
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x00', True)], 'first heartbeat -> [00]')
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x01', True)], 'next heartbeat -> [01]')
 r = xfer(cpu, frame(0x01), 60)
-check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.6","m":0}', True)], 'product info %r' % r)
+check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.7","m":0}', True)], 'product info %r' % r)
 check(xfer(cpu, frame(0x02)) == [(3, 2, b'', True)], 'working mode -> empty 0x02')
 check(xfer(cpu, frame(0x03, b'\x04')) == [(3, 3, b'', True)], 'wifi state -> empty 0x03')
 r = dps(xfer(cpu, frame(0x08), 80))
 check(r == {1: (4, b'\x00'), 110: (1, b'\x00'), 111: (1, b'\x00'), 112: (2, (1000).to_bytes(4, 'big')),
-            113: (1, b'\x00'), 114: (1, b'\x00'), 203: (1, b'\x01')},
+            113: (1, b'\x00'), 114: (1, b'\x00')},
       'status query reports every DP: %r' % r)
 
 # --- outputs ----------------------------------------------------------------
@@ -142,12 +118,12 @@ cpu.tx.clear(); cpu.set_pin('C', 0, 0); cpu.ms(40)
 check(dps(parse(bytes(cpu.tx))) == {113: (1, b'\x01')} and outputs(cpu) == (0, 0), 'switch input active -> DP 113 true, output untouched')
 cpu.tx.clear(); cpu.set_pin('C', 0, 1); cpu.ms(40)
 check(dps(parse(bytes(cpu.tx))) == {113: (1, b'\x00')}, 'switch input released -> DP 113 false')
-if TEST_LIGHT:
+if TEST_ALL:
     cpu.adc[2] = 1003
     cpu.tx.clear(); cpu.ms(1000)
     check(dps(parse(bytes(cpu.tx))) == {112: (2, (1003).to_bytes(4, 'big'))}, 'light: raw ADC change of 3 reported within 1 s')
 else:
-    print('skip light sensor (PS10_TEST_LIGHT=1)')
+    skip('light sensor')
 
 # --- radar relay ------------------------------------------------------------
 wire = SoftUartWire(cpu, 'B', 4)
@@ -175,24 +151,6 @@ cpu.ms(120)
 chunks = [data[4:] for ver, cmd, data, ok in parse(bytes(cpu.tx))]
 check(b''.join(chunks) == stream and max(map(len, chunks)) <= 48,
       'long burst relayed in chunks of <= 48 (%s)' % [len(c) for c in chunks])
-
-r = dps(xfer(cpu, frame(0x06, dp(203, 1, [0]))))
-check(r == {203: (1, b'\x00')}, 'DP 203 off -> reported back')
-cpu.tx.clear()
-wire.send(ack)
-cpu.ms(35)
-check(parse(bytes(cpu.tx)) == [], 'relay off: radar bytes not sent to ESPHome')
-log0 = len(cpu.pin_log)
-r = xfer(cpu, frame(0x06, dp(202, 0, read_fw)), 40)
-check(r == [(3, 7, dp(202, 0, b''), True)] and decode_uart(cpu.pin_log[log0:], 'B', 3) == read_fw,
-      'relay off: DP 202 writes still reach the radar and are answered')
-cpu.ms(100)                                      # let the pacer time out (no ACK)
-r = dps(xfer(cpu, frame(0x06, dp(203, 1, [1]))))
-check(r == {203: (1, b'\x01')}, 'DP 203 on -> reported back')
-cpu.tx.clear()
-wire.send(ack)
-cpu.ms(35)
-check(b''.join(d[4:] for _, c, d, ok in parse(bytes(cpu.tx))) == ack, 'relay on again: radar bytes relayed')
 
 for cmd in (0xA1, 0xA2):
     log0 = len(cpu.pin_log)
@@ -240,8 +198,11 @@ cpu.ms(150)
 log0 = len(cpu.pin_log)
 r = xfer(cpu, frame(0x06, dp(202, 0, setup)), 150)   # ~100 ms to arrive at 9600
 check(len(setup) == 88 and r == [(3, 7, dp(202, 0, b''), True)], '88-byte DP 202 write accepted and answered at once')
-cpu.ms(900)
-check(decode_uart(cpu.pin_log[log0:], 'B', 3) == setup, 'all seven commands reach the radar, one at a time (no ACKs: 100 ms apart)')
+if TEST_ALL:
+    cpu.ms(900)
+    check(decode_uart(cpu.pin_log[log0:], 'B', 3) == setup, 'all seven commands reach the radar, one at a time (no ACKs: 100 ms apart)')
+else:
+    skip('seven commands paced to the radar')
 
 # a radar that doesn't answer: every write is still answered at once, and
 # what the queue can't take is refused whole, with failure ACKs
@@ -261,69 +222,29 @@ for k in range(3):
             got += b''.join(d[4:] for _, c, d, ok in r)
             break
 check(len(replies) == 3 and max(replies) <= 200, 'three 120-byte writes each answered on arrival (%s ms after sending started)' % replies)
-cpu.tx.clear()
-cpu.ms(3500)
-got += b''.join(d[4:] for _, c, d, ok in parse(bytes(cpu.tx)))
-sent = decode_uart(cpu.pin_log[log0:], 'B', 3)
-frames = [sent[i:i + 12] for i in range(0, len(sent), 12)]
-naks = [got[i:i + 14] for i in range(0, len(got), 14)]
-check(all(f in burst for f in frames), 'only whole commands reach the radar')
-check(all(n[:6] == bytes.fromhex('FDFCFBFA0400') and n[7:] == bytes.fromhex('01010004030201') for n in naks) and naks,
-      'the rest refused with failure ACKs (%d sent, %d refused)' % (len(frames), len(naks)))
-check(len(frames) + len(naks) == 30, 'every command either sent or refused')
+if TEST_ALL:
+    cpu.tx.clear()
+    cpu.ms(3500)
+    got += b''.join(d[4:] for _, c, d, ok in parse(bytes(cpu.tx)))
+    sent = decode_uart(cpu.pin_log[log0:], 'B', 3)
+    frames = [sent[i:i + 12] for i in range(0, len(sent), 12)]
+    naks = [got[i:i + 14] for i in range(0, len(got), 14)]
+    check(all(f in burst for f in frames), 'only whole commands reach the radar')
+    check(all(n[:6] == bytes.fromhex('FDFCFBFA0400') and n[7:] == bytes.fromhex('01010004030201') for n in naks) and naks,
+          'the rest refused with failure ACKs (%d sent, %d refused)' % (len(frames), len(naks)))
+    check(len(frames) + len(naks) == 30, 'every command either sent or refused')
+else:
+    skip('full radar queue refusing commands')
 
 # --- receive errors -----------------------------------------------------------
 cpu.uart_stall_on_error = True                   # a receiver that stops after an error
 cpu.uart_err = 0x18                              # framing error + break
 r = xfer(cpu, frame(0x00))
 check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'framing/break error cleared at once: heartbeat still answered')
-cpu.mem[0x48E] &= ~0x04                          # receive-error interrupt lost: the main loop's check
-cpu.uart_err = 0x02
+cpu.uart_err = 0x02                              # overrun
 r = xfer(cpu, frame(0x00))
-check(r == [(3, 0, b'\x01', True)], 'overrun cleared by the main loop too')
-cpu.mem[0x48E] |= 0x04
+check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'overrun cleared at once too')
 cpu.uart_stall_on_error = False
-
-# --- receive diagnostics (DP 250), off by default ---------------------------------
-if TEST_DIAG:
-    cpu = boot(ee0)
-    cpu.ms(5)
-    sent = 0
-    for f in (frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)):
-        xfer(cpu, f, 80)
-        sent += len(f)
-    d = diag(cpu)
-    check(d is not None and d['len'] == 82 and d['layout'] == 2, 'DP 250 every 2 s once online, 82 bytes: %r' % d)
-    last = b''.join((frame(0x00), frame(0x01), frame(0x02), frame(0x03, b'\x04'), frame(0x08)))
-    check(d and d['raw'] == last[-32:],
-          'DP 250 carries the last 32 bytes received: %s' % (d and d['raw'].hex()))
-    check(d and d['isr'] >= 1000 and d['loops'] > 1000 and d['loops_min'] > 0 and d['relay'] == 1 and d['hunted'] == 0,
-          'interrupts/s %s, main-loop passes/s %s (min %s), nothing skipped hunting for 55 AA'
-          % (d and d['isr'], d and d['loops'], d and d['loops_min']))
-    check(d and d['rx_bytes'] == sent and d['frames'] == 5 and d['bad_sum'] == d['resyncs'] == 0,
-          'DP 250 counts bytes received and frames accepted')
-    check(d and d['ier'] == 0x05 and d['mcr'] == 0x18 and d['state'] == 0, 'receive and receive-error interrupts on, parser idle')
-    check(d and d['polled'] == 0 and d['lag'] < 60, 'every byte taken by the interrupt; main loop lag %s ms' % (d and d['lag']))
-    bad = bytearray(frame(0x00)); bad[-1] ^= 1
-    xfer(cpu, bytes(bad))
-    xfer(cpu, frame(0x00)[:4], 300)                  # half a frame, then nothing
-    xfer(cpu, b'\x12\x34\x55\x00', 300)              # noise: 3 bytes skipped (and 55 00 counts 2)
-    d = diag(cpu)
-    check(d and d['bad_sum'] == 1 and d['resyncs'] == 1 and d['hunted'] == 4,
-          'bad checksum, dropped partial frame and skipped bytes counted: %r' % d)
-    cpu.uart_stall_on_error = True                   # a receiver that stops after an error
-    cpu.uart_err = 0x18                              # framing error + break
-    r = xfer(cpu, frame(0x00))
-    check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'framing/break error cleared at once: heartbeat still answered')
-    cpu.mem[0x48E] &= ~0x04                          # receive-error interrupt lost: the main loop's check
-    cpu.uart_err = 0x02
-    r = xfer(cpu, frame(0x00))
-    check(r == [(3, 0, b'\x01', True)], 'overrun cleared by the main loop too')
-    d = diag(cpu)
-    check(d and d['fe'] == 1 and d['bk'] == 1 and d['ovr'] == 1 and d['errs_seen'] == 0x1A,
-          'error flags counted: %r' % d)
-else:
-    print('skip DP 250 diagnostics (PS10_TEST_DIAG=1)')
 
 # --- update hand-over --------------------------------------------------------
 check(cpu.ee == ee0, 'EEPROM never written in normal running')
@@ -334,12 +255,15 @@ try:
 except Reset:
     check(cpu.ee[0] == 0xFF and cpu.ee[1] == 0xFF and cpu.ee[2:] == ee0[2:], '0x0A -> EEPROM 0x00/0x01 = FF (only), RESET')
 
-cpu = boot(ee0, {('A', 3): 0})
-try:
-    cpu.ms(3200)
-    check(False, 'button held at power-up resets into the bootloader')
-except Reset:
-    check(cpu.ee[0] == 0xFF and cpu.ee[1] == 0xFF, 'button held 3 s at power-up -> EEPROM 0x00/0x01 = FF, RESET')
+if TEST_ALL:
+    cpu = boot(ee0, {('A', 3): 0})
+    try:
+        cpu.ms(3200)
+        check(False, 'button held at power-up resets into the bootloader')
+    except Reset:
+        check(cpu.ee[0] == 0xFF and cpu.ee[1] == 0xFF, 'button held 3 s at power-up -> EEPROM 0x00/0x01 = FF, RESET')
+else:
+    skip('button held at power-up')
 
 import emu
 check(not emu.MISSING_RAM, 'no access to RAM the FT61E0A5 lacks (bank 12 above 0x64F): %s'

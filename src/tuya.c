@@ -5,26 +5,18 @@ uint8_t tuya_rx[TUYA_RX_MAX];
 static uint8_t state, cmd, sum, cnt, overflow;
 static uint16_t remain;
 static uint8_t tsum;
-uint16_t tuya_frames, tuya_bad_sum, tuya_too_long, tuya_resyncs, tuya_hunted;
 
-uint8_t tuya_state(void) { return state; }
-
-void tuya_resync(void)
-{
-    if (state) tuya_resyncs++;  /* a partial frame dropped */
-    state = 0;
-}
+void tuya_resync(void) { state = 0; }
 
 uint8_t tuya_feed(uint8_t b, uint8_t *len)
 {
     switch (state) {
     case 0:                     /* 55 */
         if (b == 0x55) { state = 1; sum = 0x55; }
-        else tuya_hunted++;
         return 0xFF;
     case 1:                     /* AA (55 55 AA stays in sync) */
         if (b == 0xAA) { state = 2; sum += 0xAA; }
-        else if (b != 0x55) { state = 0; tuya_hunted += 2; }
+        else if (b != 0x55) state = 0;
         return 0xFF;
     case 2:                     /* version: anything */
         sum += b; state = 3;
@@ -48,9 +40,7 @@ uint8_t tuya_feed(uint8_t b, uint8_t *len)
         return 0xFF;
     default:                    /* checksum */
         state = 0;
-        if (overflow) { tuya_too_long++; return 0xFF; }
-        if (b != sum) { tuya_bad_sum++; return 0xFF; }
-        tuya_frames++;
+        if (b != sum || overflow) return 0xFF;
         *len = cnt;
         return cmd;
     }

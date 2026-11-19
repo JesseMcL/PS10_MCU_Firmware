@@ -56,15 +56,13 @@ Numbers are the stock firmware's where the function is the same.
 | 113 | bool | ro | switch input (PC0) active (low), 30 ms debounce |
 | 114 | bool | ro | button (PA3) pressed, 30 ms debounce |
 | 202 | raw | rw | radar serial relay, in chunks of any size ([docs/radar-passthrough.md](docs/radar-passthrough.md)) |
-| 203 | bool | rw | radar relay: 1 (start-up) relays radar bytes in DP 202, 0 discards them (DP 202 writes still reach the radar); for testing |
-| 250 | raw | ro | link diagnostics every 2 s: reset flags, Tuya UART counters, interrupt and main-loop rates, queue high-water marks, radar link counters, the last 32 bytes received (layout in `src/main.c`, `diag_send`); the package logs it under `ps10_diag` |
 
 Values are raw: no scaling, averaging or thresholds. The debounce on the two
 contacts is the only filtering. Inputs are reported when they change and on a
 status query (`0x08`). The output and LED start off after a power cut. Nothing
 is written to the data EEPROM except the bootloader hand-over, so the stock
 settings (0x02-0x0F, 0x7F) are still there for a rollback to 1.0.5. Product
-info: `{"p":"ps10open","v":"0.2.6","m":0}`.
+info: `{"p":"ps10open","v":"0.2.7","m":0}`.
 
 ### ESPHome
 
@@ -73,7 +71,23 @@ for the I/O, the default behaviour (button click and switch input toggle the
 output, LED follows the output), `ld2410:` on a
 [virtual UART](https://github.com/JesseMcL/esphome_virtual_uart) carried by
 DP 202, and Home Assistant actions to set the radar's gate thresholds, range and
-timeout, Bluetooth password and engineering mode.
+timeout, Bluetooth password, and to calibrate it.
+
+Radar tuning lives on the device's own web page, not in Home Assistant:
+
+- **Radar engineering mode** (switch) streams the per-gate energies into the
+  ESPHome log, tag `ps10_gates`. With
+  [`esphome/ps10-gates.js`](esphome/ps10-gates.js) next to the device's YAML
+  (`web_server: js_include`), the page draws them as a live chart: a moving
+  and a still bar per gate, the peak since you last reset it, and each gate's
+  threshold. A gate detects when its bar crosses its line.
+- **Radar calibrate** (button, or the `radar_calibrate` action with a start
+  delay, duration and margin) turns engineering mode on, waits for you to
+  leave the room (10 s from the button), records each gate's highest energy
+  for 30 s, then sets every threshold to that peak + 10 and reads them back.
+- The gate energies and thresholds are internal: none of them reach Home
+  Assistant. The switch and button are config entities, disabled there by
+  default.
 
 ## Build
 
@@ -87,8 +101,8 @@ registers come from `src/ft61e0a5.h`, never from the PIC part's headers.
 ```
 python tools/build.py              # build/<name>-<version>.bin + hashes + tuya_mcu_dfu block
 python tools/test_open.py          # run it in the emulator (a few minutes);
-                                   # PS10_TEST_LIGHT=1 / PS10_TEST_DIAG=1 add the slow light and
-                                   # DP 250 tests; PS10_TIM1_DIR0=up runs TIM1 counting up
+                                   # PS10_TEST_ALL=1 adds the slow, low-value checks (CI runs them);
+                                   # PS10_TIM1_DIR0=up runs TIM1 counting up
 ```
 
 **Toolchain:**
@@ -113,15 +127,15 @@ platform would only wrap the same calls.
 
 ## Install and roll back
 
-1. Copy `build/ps10-mcu-0.2.6.bin` next to the device YAML and point
+1. Copy `build/ps10-mcu-0.2.7.bin` next to the device YAML and point
    `tuya_mcu_dfu` at it (the build prints the block):
    ```yaml
    update:
      - platform: tuya_mcu_dfu
        name: MCU firmware
        firmware:
-         path: ps10-mcu-0.2.6.bin
-         version: "0.2.6"
+         path: ps10-mcu-0.2.7.bin
+         version: "0.2.7"
          sha256: <from the build output>
    ```
    Add [`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) as a package, install,
@@ -151,6 +165,7 @@ tools/emu.py               PIC16F1 emulator with the inferred FT61E0A5 periphera
 tools/mcu.py               FT61E0A5 peripherals for the emulator: pins, timers, EINT4, ADC
 tools/test_open.py         emulator test of the open firmware
 tools/stock_probe.py       runs the stock image, shows pin activity per command
-esphome/ps10-mcu.yaml      ESPHome package: I/O entities, behaviour, ld2410 over DP 202, radar actions
+esphome/ps10-mcu.yaml      ESPHome package: I/O entities, behaviour, ld2410 over DP 202, radar actions, calibration
+esphome/ps10-gates.js      web page chart of the radar's gate energies and thresholds (web_server js_include)
 reference/ps10-mcu-1.0.5.bin  official 1.0.5 image (md5 9bd5f57f…)
 ```

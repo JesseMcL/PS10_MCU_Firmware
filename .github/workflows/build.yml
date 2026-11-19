@@ -67,7 +67,7 @@ jobs:
           python3 tools/build.py ${{ steps.ver.outputs.version && format('--version {0}', steps.ver.outputs.version) || '' }} | tee build/summary.txt
 
       - name: Emulator test
-        run: for t in tools/test_*.py; do python3 "$t"; done
+        run: for t in tools/test_*.py; do PS10_TEST_ALL=1 python3 "$t"; done
 
       - name: Manifest
         run: |
