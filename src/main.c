@@ -31,7 +31,7 @@
 #include "tuya.h"
 
 #ifndef VERSION
-#define VERSION "0.2.7"
+#define VERSION "0.2.8"
 #endif
 
 BOOTLOADER_RAM;

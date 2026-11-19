@@ -10,7 +10,10 @@ import os
 import collections
 from emu import Cpu, INTCON, BSR, PCLATH
 
-IPS = 8_000_000                       # instructions per second
+# Instruction clock = SysClk / TSEL (a BOOT-level setting, 2T by default; the
+# PS10's isn't known): PS10_TSEL=1|2|4 runs the emulator at that speed.
+TSEL = int(os.environ.get('PS10_TSEL', 2))
+IPS = 16_000_000 // TSEL                # instructions per second
 PORT = {'A': 0x00C, 'B': 0x00D, 'C': 0x00E}
 TRIS = {'A': 0x08C, 'B': 0x08D, 'C': 0x08E}
 LAT = {'A': 0x10C, 'B': 0x10D, 'C': 0x10E}
@@ -157,10 +160,10 @@ class Mcu(Cpu):
             if not cr1 & 1:
                 continue
             if t.name == 'TIM4':
-                per = 2
+                per = TSEL                    # HIRC counts per instruction
             else:
                 src = (self.mem[TCKSRC] >> (0 if t.name == 'TIM1' else 4)) & 7
-                per = 4 if src == 3 else 2
+                per = 2 * TSEL if src == 3 else TSEL
             if t.psc_kind == 'lin':
                 div = ((self.mem[t.psc[0]] << 8) | self.mem[t.psc[1]]) + 1
             else:

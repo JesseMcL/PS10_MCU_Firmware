@@ -119,19 +119,24 @@ void radar_isr(void)
         if (rx_bit == 0) {
             if (level) goto done;   /* glitch, not a start bit */
             rx_bit = 1;
-        } else if (rx_bit <= 8) {
-            rx_shift = (uint8_t)(rx_shift >> 1) | (level ? 0x80 : 0);
-            rx_bit++;
+            return;
         } else {
-            if (level) {
-                rx_push(rx_shift);
-                rx_foot = (rx_shift == footer[rx_foot]) ? rx_foot + 1 : (rx_shift == footer[0]);
-                if (rx_foot == 4) { rx_foot = 0; ack_seen = 1; }
-            }                       /* else framing error: drop it */
-            goto done;
+            rx_shift = (uint8_t)(rx_shift >> 1) | (level ? 0x80 : 0);
+            if (++rx_bit <= 8)
+                return;
+            /* Last data bit: the byte is complete. Re-arm for the next start
+             * bit now rather than after sampling the stop bit: the radar sends
+             * bytes back to back, so the next start edge comes 1.5 bits from
+             * here, but only half a bit after the stop-bit sample, which a late
+             * interrupt or a radar clock a little faster than ours would miss.
+             * No falling edge can come before the next start bit (the last data
+             * bit into the stop bit only rises). The stop bit isn't checked:
+             * ESPHome's frame filter catches a byte that was really broken. */
+            rx_push(rx_shift);
+            rx_foot = (rx_shift == footer[rx_foot]) ? rx_foot + 1 : (rx_shift == footer[0]);
+            if (rx_foot == 4) { rx_foot = 0; ack_seen = 1; }
         }
-        return;
-done:
+done:                               /* byte done, or not a start bit after all: wait for the next */
         TIM2CR1 &= (uint8_t)~TIM_CEN;
         EPIF0 = 0x10;
         EPIE0 |= 0x10;

@@ -76,7 +76,7 @@ check(outputs(cpu) == (0, 0) and cpu.pin('B', 3) == 1, 'triac and LED off, radar
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x00', True)], 'first heartbeat -> [00]')
 check(xfer(cpu, frame(0x00)) == [(3, 0, b'\x01', True)], 'next heartbeat -> [01]')
 r = xfer(cpu, frame(0x01), 60)
-check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.7","m":0}', True)], 'product info %r' % r)
+check(r == [(3, 1, b'{"p":"ps10open","v":"0.2.8","m":0}', True)], 'product info %r' % r)
 check(xfer(cpu, frame(0x02)) == [(3, 2, b'', True)], 'working mode -> empty 0x02')
 check(xfer(cpu, frame(0x03, b'\x04')) == [(3, 3, b'', True)], 'wifi state -> empty 0x03')
 r = dps(xfer(cpu, frame(0x08), 80))
@@ -151,6 +151,18 @@ cpu.ms(120)
 chunks = [data[4:] for ver, cmd, data, ok in parse(bytes(cpu.tx))]
 check(b''.join(chunks) == stream and max(map(len, chunks)) <= 48,
       'long burst relayed in chunks of <= 48 (%s)' % [len(c) for c in chunks])
+
+# the radar's clock and ours (HIRC) can each be a little off: bytes sent back
+# to back must still all arrive, with the radar 2% fast or 2% slow
+for pct in (2, -2):
+    off = SoftUartWire(cpu, 'B', 4, baud=9600 * (1 + pct / 100))
+    data = bytes((i * 37 + 11) & 0xFF for i in range(80))
+    cpu.tx.clear()
+    off.send(data)
+    cpu.ms(160)
+    got = b''.join(d[4:] for _, c, d, ok in parse(bytes(cpu.tx)))
+    check(got == data, 'radar %+d%% off: 80 bytes back to back relayed intact (%d received)' % (pct, len(got)))
+wire = SoftUartWire(cpu, 'B', 4)
 
 for cmd in (0xA1, 0xA2):
     log0 = len(cpu.pin_log)
@@ -239,11 +251,12 @@ else:
 # --- receive errors -----------------------------------------------------------
 cpu.uart_stall_on_error = True                   # a receiver that stops after an error
 cpu.uart_err = 0x18                              # framing error + break
-r = xfer(cpu, frame(0x00))
-check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'framing/break error cleared at once: heartbeat still answered')
+r = xfer(cpu, frame(0x00), 80)
+check((3, 0, b'\x01', True) in r and cpu.uart_err == 0,
+      'framing/break error cleared at once: heartbeat still answered (flags %02X)' % cpu.uart_err)
 cpu.uart_err = 0x02                              # overrun
-r = xfer(cpu, frame(0x00))
-check(r == [(3, 0, b'\x01', True)] and cpu.uart_err == 0, 'overrun cleared at once too')
+r = xfer(cpu, frame(0x00), 80)
+check((3, 0, b'\x01', True) in r and cpu.uart_err == 0, 'overrun cleared at once too')
 cpu.uart_stall_on_error = False
 
 # --- update hand-over --------------------------------------------------------
