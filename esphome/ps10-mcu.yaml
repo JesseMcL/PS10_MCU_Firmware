@@ -113,7 +113,20 @@ binary_sensor:
   - platform: ld2410
     ld2410_id: radar
     has_target:
+      id: radar_presence
       name: Presence
+      on_press:
+        - if:
+            condition:
+              select.is: { id: output_mode, options: [Auto] }
+            then:
+              - switch.turn_on: output
+      on_release:
+        - if:
+            condition:
+              select.is: { id: output_mode, options: [Auto] }
+            then:
+              - switch.turn_off: output
     has_moving_target:
       name: Moving target
     has_still_target:
@@ -205,7 +218,34 @@ text_sensor:
   - platform: ld2410
     ld2410_id: radar
     version:
+      id: radar_version
       name: Radar firmware
+
+# Auto: the output follows Presence (the radar's own hold time applies, see
+# radar_set_range), and the LED follows the output. Manual: only the button,
+# the switch input and Home Assistant switch it. The button and switch input
+# work in both; in Auto the next presence change takes over again.
+select:
+  - platform: template
+    id: output_mode
+    name: Output mode
+    entity_category: config
+    options: [Auto, Manual]
+    initial_option: Auto
+    optimistic: true
+    restore_value: true
+    on_value:
+      - if:
+          condition:
+            select.is: { id: output_mode, options: [Auto] }
+          then:
+            - if:
+                condition:
+                  binary_sensor.is_on: radar_presence
+                then:
+                  - switch.turn_on: output
+                else:
+                  - switch.turn_off: output
 
 button:
   - platform: template
@@ -229,6 +269,18 @@ globals:
 # In engineering mode: energies 5 times a second, thresholds every 2 s, as
 # "E m=<9 moving> s=<9 still>" and "T m=... s=..." under the ps10_gates tag.
 interval:
+  # ld2410 asks for the radar's firmware version once at boot, which the
+  # radar can miss while it's starting up itself. Ask again until it answers
+  # (at most 6 times).
+  - interval: 10s
+    then:
+      - lambda: |-
+          static uint8_t tries;
+          if (id(radar_version).has_state() && !id(radar_version).state.empty()) return;
+          if (tries >= 6) return;
+          tries++;
+          ESP_LOGI("ps10", "radar firmware version unknown, asking again (%u/6)", tries);
+          id(radar).read_all_info();
   - interval: 100ms
     then:
       - lambda: |-

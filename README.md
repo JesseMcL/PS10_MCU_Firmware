@@ -68,7 +68,8 @@ info: `{"p":"ps10open","v":"0.2.7","m":0}`.
 
 [`esphome/ps10-mcu.yaml`](esphome/ps10-mcu.yaml) is a package with entities
 for the I/O, the default behaviour (button click and switch input toggle the
-output, LED follows the output), `ld2410:` on a
+output, LED follows the output; an Output mode select makes the output follow
+presence), `ld2410:` on a
 [virtual UART](https://github.com/JesseMcL/esphome_virtual_uart) carried by
 DP 202, and Home Assistant actions to set the radar's gate thresholds, range and
 timeout, Bluetooth password, and to calibrate it.
